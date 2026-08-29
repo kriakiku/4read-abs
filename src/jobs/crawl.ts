@@ -7,7 +7,6 @@ import { parseListingPage } from "../source/listing.ts";
 import { parseBookSitemap, parseSitemapIndex, isArticleSitemapUrl, sitemapIndexUrl } from "../source/sitemap.ts";
 import { bookUrl, xfsearchUrl } from "../source/urls.ts";
 import {
-  booksNeedingDetail,
   booksNeedingDetailForSubscriptions,
   markBookState,
   recordBookDetail,
@@ -209,27 +208,19 @@ export interface BackfillResult {
 }
 
 /**
- * Slowly work through books whose detail page has never been read. Stops as soon as the
- * source starts pushing back so a backfill never turns into a hammering loop.
- *
- * By default only subscription matches and queued books are fetched (see
- * `schedule.backfillAll`). The sitemap still registers the whole catalogue; it just does
- * not spend FlareSolverr budget on unrelated detail pages.
+ * Slowly fetch detail pages for subscription matches and queued books only.
+ * Never walks the whole sitemap catalogue. Stops early if the source pushes back.
  */
 export async function backfillDetails(ctx: AppContext, limit: number): Promise<BackfillResult> {
   const result: BackfillResult = { attempted: 0, ok: 0, skipped: 0, failed: 0, stoppedEarly: false };
-  const pending = ctx.config.schedule.backfillAll
-    ? booksNeedingDetail(ctx.db, limit)
-    : booksNeedingDetailForSubscriptions(ctx.db, ctx.config.subscriptions, limit);
+  const pending = booksNeedingDetailForSubscriptions(ctx.db, ctx.config.subscriptions, limit);
 
   if (pending.length === 0) {
     const pendingAll = ctx.db
       .query<{ n: number }, []>("select count(*) as n from books where detail_state = 'pending'")
       .get()?.n ?? 0;
     log.info(
-      ctx.config.schedule.backfillAll
-        ? `backfill: nothing pending (catalogue pending=${pendingAll})`
-        : `backfill: nothing pending for subscriptions/queue (catalogue pending=${pendingAll}; set schedule.backfillAll: true to fetch all)`,
+      `backfill: nothing pending for subscriptions/queue (catalogue pending=${pendingAll} ignored)`,
     );
     setMeta(ctx.db, "backfill_ran_at", new Date().toISOString());
     return result;

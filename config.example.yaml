@@ -123,9 +123,6 @@ schedule:
   # Sitemap poll interval in minutes; 0 disables it.
   incrementalMinutes: 60
   backfillEnabled: true
-  # false (default): only detail-fetch books that match a subscription or are in the queue.
-  # true: walk every pending sitemap entry (slow; unrelated titles show up in the logs).
-  backfillAll: false
-  # Detail pages per tick. Keep it small: the source rate limits aggressively.
+  # Detail pages per tick — only for subscription matches and the news queue.
   backfillBatch: 25
   syncMinutes: 180

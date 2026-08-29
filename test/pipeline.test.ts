@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppContext } from "../src/context.ts";
 import { catalogCounts, getBook, booksForSubscription } from "../src/catalog/store.ts";
-import { backfillDetails, seedEntities, syncSitemap } from "../src/jobs/crawl.ts";
+import { backfillDetails, fetchBookDetail, seedEntities, syncSitemap } from "../src/jobs/crawl.ts";
 import { listQueue, refreshQueue, setQueueState } from "../src/jobs/subscriptions.ts";
 import { syncLibrary } from "../src/jobs/sync.ts";
 import { createApp } from "../src/web/server.ts";
@@ -183,7 +183,6 @@ subscriptions:
 schedule:
   incrementalMinutes: 0
   backfillEnabled: false
-  backfillAll: true
   syncMinutes: 0
 `,
   );
@@ -230,6 +229,13 @@ schedule:
   return fake;
 }
 
+/** Detail-fetch known fixture books (scheduled backfill never walks the whole sitemap). */
+async function fetchTestDetails(ctx: AppContext, ids: number[] = [6840, 3130, 8130]): Promise<void> {
+  for (const sourceId of ids) {
+    await fetchBookDetail(ctx, sourceId);
+  }
+}
+
 describe("catalogue pipeline", () => {
   test("seeds entities from the two index pages", async () => {
     const fake = await buildFake();
@@ -255,14 +261,10 @@ describe("catalogue pipeline", () => {
     expect(second.stale).toBe(0);
   });
 
-  test("backfill stores full detail and skips non-book pages", async () => {
+  test("detail fetch stores full pages and related pending siblings", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    const result = await backfillDetails(fake.ctx, 10);
-
-    expect(result.ok).toBe(2);
-    expect(result.skipped).toBe(1);
-    expect(result.failed).toBe(0);
+    await fetchTestDetails(fake.ctx);
 
     const book = getBook(fake.ctx.db, 6840)!;
     expect(book.title).toBe("Всі молоді чуваки: Перший рік");
@@ -277,12 +279,14 @@ describe("catalogue pipeline", () => {
     // Sibling volumes referenced in the description become pending entries of their own.
     const sibling = getBook(fake.ctx.db, 6862);
     expect(sibling?.detail_state).toBe("pending");
+
+    expect(getBook(fake.ctx.db, 8130)?.detail_state).toBe("skipped");
   });
 
   test("subscription lookups work by key and by display name", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
 
     expect(booksForSubscription(fake.ctx.db, "narrator", "Характерник").map((b) => b.source_id)).toEqual([3130]);
     expect(booksForSubscription(fake.ctx.db, "narrator", "характерник").map((b) => b.source_id)).toEqual([3130]);
@@ -294,7 +298,7 @@ describe("catalogue pipeline", () => {
   test("the queue fills from subscriptions and records why", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     const result = await refreshQueue(fake.ctx);
 
     expect(result.subscriptions).toBe(2);
@@ -307,11 +311,9 @@ describe("catalogue pipeline", () => {
     expect(hpmor.coverUrl).toMatch(/^\/api\/covers\/3130/);
   });
 
-  test("facet crawl links series without a detail fetch, and scoped backfill stays on-topic", async () => {
+  test("facet crawl links series without a detail fetch, and backfill stays on-topic", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    // Catalogue-wide backfill off: unrelated sitemap entries must not be fetched.
-    fake.ctx.config.schedule.backfillAll = false;
 
     const empty = await backfillDetails(fake.ctx, 10);
     expect(empty.attempted).toBe(0);
@@ -331,7 +333,7 @@ describe("catalogue pipeline", () => {
   test("accept and ignore move entries between states", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
 
     setQueueState(fake.ctx, 3130, "ignored");
@@ -344,7 +346,7 @@ describe("audiobookshelf sync", () => {
   test("matches an item, writes the sidecar and triggers a rescan", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
 
     const result = await syncLibrary(fake.ctx);
 
@@ -370,7 +372,7 @@ describe("audiobookshelf sync", () => {
   test("a second sync writes nothing and does not rescan", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     await syncLibrary(fake.ctx);
     fake.scanned.length = 0;
 
@@ -396,7 +398,7 @@ describe("audiobookshelf sync", () => {
       ],
     });
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
 
     const result = await syncLibrary(fake.ctx);
     expect(result.matched).toBe(1);
@@ -416,7 +418,7 @@ describe("audiobookshelf sync", () => {
       ],
     });
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
 
     const result = await syncLibrary(fake.ctx);
     expect(result.matched).toBe(0);
@@ -426,7 +428,7 @@ describe("audiobookshelf sync", () => {
   test("createFolders prepares a folder for an accepted book", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
     setQueueState(fake.ctx, 6840, "accepted");
 
@@ -452,7 +454,7 @@ describe("audiobookshelf sync", () => {
   test("prepared folders without media get audio on the next sync", async () => {
     const fake = await buildFake({ absItems: [] });
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
 
     const folder = join(
@@ -523,7 +525,7 @@ describe("http api", () => {
   test("queue actions are exposed over http", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
     const app = createApp(fake.ctx);
 
@@ -540,7 +542,7 @@ describe("http api", () => {
   test("deleting a queue entry allows it to be re-queued", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
     const app = createApp(fake.ctx);
 
@@ -569,7 +571,7 @@ describe("http api", () => {
   test("search finds catalogue entries for manual linking", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     const app = createApp(fake.ctx);
 
     const response = await app.request("/api/search?q=молоді");
@@ -580,7 +582,7 @@ describe("http api", () => {
   test("covers are served from our own cache, not from the source", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     // Syncing caches the cover for the matched book in staging.
     await syncLibrary(fake.ctx);
     const app = createApp(fake.ctx);
@@ -594,7 +596,7 @@ describe("http api", () => {
   test("an uncached cover reports 404 instead of blocking on the source", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
-    await backfillDetails(fake.ctx, 10);
+    await fetchTestDetails(fake.ctx);
     const app = createApp(fake.ctx);
 
     const started = Date.now();

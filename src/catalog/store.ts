@@ -332,21 +332,9 @@ export function withPeople(db: Db, row: BookRow): BookWithPeople {
   };
 }
 
-export function booksNeedingDetail(db: Db, limit: number): BookRow[] {
-  return db
-    .query<BookRow, [number]>(
-      `select * from books
-       where detail_state = 'pending'
-       order by (fetched_at is not null), coalesce(lastmod, '') desc, source_id desc
-       limit ?`,
-    )
-    .all(limit);
-}
-
 /**
- * Pending detail pages for books that already match a subscription or sit in the news
- * queue. Used when the catalogue-wide backfill is off so we do not spend FlareSolverr
- * budget on unrelated sitemap entries.
+ * Pending detail pages for books that match a subscription or sit in the news queue.
+ * Unrelated sitemap entries are never selected.
  */
 export function booksNeedingDetailForSubscriptions(
   db: Db,
