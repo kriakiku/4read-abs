@@ -235,6 +235,70 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+## Резервне копіювання
+
+Стан утиліти — це майже лише SQLite і конфіг. Обкладинки й зібране в staging можна
+знову отримати з джерела / перезібрати `sync`; аудіо цей інструмент **не** качає й у
+бекап 4read-abs включати не потрібно (його зберігаєте окремо з бібліотекою ABS, якщо
+взагалі бекапите медіа).
+
+### Що обов’язково зберігати
+
+| Шлях | Навіщо |
+| --- | --- |
+| `{DATA_DIR}/4read-abs.db` (+ `4read-abs.db-wal`, `4read-abs.db-shm`, якщо є) | Каталог, черга, підписки, зв’язки з ABS, cookie jar Cloudflare, кеш Hardcover |
+| `config.yaml` (або том `/config`) | Підписки, політики sync, path mappings |
+| Секрети з оточення | `ABS_URL`, `ABS_API_KEY`, `HARDCOVER_API_KEY`, тощо — у менеджері секретів / `.env`, не в git |
+
+Перед копіюванням **зупиніть** сервіс (`docker compose stop 4read-abs` або SIGTERM бінарнику), щоб SQLite у режимі WAL віддав узгоджений знімок. Альтернатива без даунтайму: `sqlite3 data/4read-abs.db ".backup 'backup/4read-abs.db'"`.
+
+### Що можна не бекапити (докачається / перезбереться)
+
+| Шлях | Чому можна пропустити |
+| --- | --- |
+| увесь `STAGING_DIR` (`./staging`, `/staging`) | Обкладинки й sidecar збираються знову при `sync` / відкритті UI |
+| аудіо в бібліотеці ABS (`.m4b`, `.mp3`, `.m4a`, …) | Не частина стану 4read-abs; після відновлення БД sidecar (`metadata.json`, `cover.*`) знову запише `sync` |
+| логи контейнера | Не потрібні для відновлення |
+
+### Приклад: архів лише стану утиліти
+
+Docker Compose (томи `./data`, `./config`, `./staging` поруч із compose-файлом):
+
+```bash
+docker compose stop 4read-abs
+
+# Конфіг + SQLite; staging і будь-які медіа виключені.
+tar -czf 4read-abs-state-$(date +%F).tar.gz \
+  --exclude='staging' \
+  --exclude='*.m4b' --exclude='*.mp3' --exclude='*.m4a' \
+  --exclude='*.flac' --exclude='*.ogg' --exclude='*.opus' \
+  --exclude='*.bak' \
+  config data
+
+docker compose start 4read-abs
+```
+
+Якщо бекапите всю машину з бібліотекою ABS і хочете **не** тягнути аудіо в цей же архів:
+
+```bash
+tar -czf abs-meta-only-$(date +%F).tar.gz \
+  --exclude='*.m4b' --exclude='*.mp3' --exclude='*.m4a' \
+  --exclude='*.flac' --exclude='*.ogg' --exclude='*.opus' \
+  --exclude='staging' \
+  /path/to/audiobooks /path/to/4read-abs/data /path/to/4read-abs/config
+```
+
+Так залишаються `metadata.json`, обкладинки й структура тек; важкі файли відновлюєте з окремого медіа-бекапу або з вашого джерела файлів.
+
+### Відновлення
+
+1. Зупиніть сервіс.
+2. Розпакуйте `config/` і `data/` на колишні місця (або вкажіть `DATA_DIR` / `CONFIG_FILE`).
+3. Переконайтеся, що `ABS_*` і `FLARESOLVERR_URL` знову в оточенні.
+4. Запустіть сервіс і за потреби виконайте `4read-abs sync` — sidecar і обкладинки в бібліотеці/staging відновляться з каталогу в БД.
+
+Cookie Cloudflare лежать у тій же БД; якщо застаріли, FlareSolverr отримає нові автоматично.
+
 ## CLI
 
 Зручно для cron замість вбудованого планувальника:
