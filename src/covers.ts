@@ -86,6 +86,7 @@ export async function downloadCoverIfStale(
 }
 
 const inFlight = new Set<number>();
+const deferredTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
 /**
  * Fetch a cover in the background so the web interface never blocks on the source, which is
@@ -107,6 +108,7 @@ export function cacheCoverInBackground(
     } catch (error) {
       if (error instanceof CooldownError) {
         log.debug(`background cover fetch deferred for ${book.source_id}: cooldown`);
+        scheduleCoverRetry(fetcher, book, config, write, error.remainingMs);
       } else {
         log.debug(`background cover fetch failed for ${book.source_id}: ${String(error)}`);
       }
@@ -114,4 +116,20 @@ export function cacheCoverInBackground(
       inFlight.delete(book.source_id);
     }
   })();
+}
+
+function scheduleCoverRetry(
+  fetcher: Fetcher,
+  book: BookWithPeople,
+  config: Config,
+  write: (cover: DownloadedCover) => Promise<void>,
+  remainingMs: number,
+): void {
+  if (deferredTimers.has(book.source_id)) return;
+  const wait = Math.min(Math.max(remainingMs + 1_000, 5_000), 15 * 60_000);
+  const timer = setTimeout(() => {
+    deferredTimers.delete(book.source_id);
+    cacheCoverInBackground(fetcher, book, config, write);
+  }, wait);
+  deferredTimers.set(book.source_id, timer);
 }

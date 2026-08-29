@@ -33,6 +33,8 @@ services:
     environment:
       LOG_LEVEL: warning
       TZ: Europe/Kyiv
+      # Must stay false: cover downloads open the image URL inside this browser.
+      DISABLE_MEDIA: "false"
     # Only 4read-abs needs to reach it, so no host port is published.
     expose:
       - "8191"

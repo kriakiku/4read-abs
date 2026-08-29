@@ -89,17 +89,38 @@ async function harness(options: {
       if (payload.cmd === "sessions.destroy") {
         return Response.json({ status: "ok" });
       }
+
+      const target = String(payload.url ?? "");
+      const cookies = [
+        { name: "cf_clearance", value: "granted", expires: Math.floor(Date.now() / 1000) + 3600 },
+        { name: "PHPSESSID", value: "abc" },
+      ];
+
+      // Stock FlareSolverr path for images: screenshot of the image viewer.
+      if (payload.returnScreenshot && /\.(webp|png|jpe?g)(\?|$)/i.test(target)) {
+        return Response.json({
+          status: "ok",
+          solution: {
+            url: target,
+            status: 200,
+            response: "",
+            userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+            cookies,
+            // 1x1 PNG
+            screenshot:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          },
+        });
+      }
+
       return Response.json({
         status: "ok",
         solution: {
-          url: String(payload.url),
+          url: target,
           status: 200,
           response: PAGE_BODY,
           userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-          cookies: [
-            { name: "cf_clearance", value: "granted", expires: Math.floor(Date.now() / 1000) + 3600 },
-            { name: "PHPSESSID", value: "abc" },
-          ],
+          cookies,
         },
       });
     },
@@ -310,15 +331,14 @@ describe("fetcher", () => {
     await fetcher.close();
   });
 
-  test("covers are fetched directly, refreshing clearance first when blocked", async () => {
+  test("covers are fetched via FlareSolverr browser when direct is blocked", async () => {
     const h = await harness({ requireClearance: true });
     const fetcher = new Fetcher(h.db, config(h));
 
     const cover = await fetcher.getBinary(`http://localhost:${h.origin.port}/uploads/x.webp`);
-    expect(cover.bytes).toEqual(new Uint8Array([1, 2, 3, 4]));
-    expect(cover.contentType).toBe("image/webp");
-    // FlareSolverr cannot return binaries, so it is only used to mint the clearance cookie.
-    expect(h.flareRequests.some((request) => request.cmd === "request.get")).toBe(true);
+    expect(cover.bytes.length).toBeGreaterThan(64);
+    expect(cover.contentType).toBe("image/png");
+    expect(h.flareRequests.some((request) => request.returnScreenshot === true)).toBe(true);
     await fetcher.close();
   });
 

@@ -11,6 +11,14 @@ interface FlareCookie {
   expires?: number;
 }
 
+interface FlareDownload {
+  filename?: string;
+  mime?: string;
+  mime_type?: string;
+  data?: string;
+  encoded_data?: string;
+}
+
 interface FlareSolution {
   url: string;
   status: number;
@@ -18,6 +26,8 @@ interface FlareSolution {
   userAgent?: string;
   headers?: Record<string, string>;
   response?: string;
+  screenshot?: string;
+  download?: FlareDownload | FlareDownload[];
 }
 
 interface FlareResponse {
@@ -32,6 +42,12 @@ export interface FlareResult {
   body: string;
   cookies: StoredCookie[];
   userAgent?: string;
+}
+
+export interface FlareImageResult {
+  bytes: Uint8Array;
+  contentType: string;
+  strategy: "download" | "screenshot";
 }
 
 /**
@@ -81,19 +97,20 @@ export class FlareSolverrClient {
     }
   }
 
-  async get(url: string): Promise<FlareResult> {
+  private async requestGet(url: string, extra: Record<string, unknown> = {}): Promise<FlareResponse> {
     await this.ensureSession();
     const payload: Record<string, unknown> = {
       cmd: "request.get",
       url,
       maxTimeout: this.maxTimeoutMs,
+      // Covers must load; some deployments set DISABLE_MEDIA=true globally.
+      disableMedia: false,
+      ...extra,
     };
     if (this.session) payload.session = this.session;
 
-    // Allow slack over maxTimeout: FlareSolverr counts only the in-browser wait.
     let result = await this.command(payload, this.maxTimeoutMs + 15_000);
 
-    // A stale session id makes every request fail; drop it and retry once without one.
     if (result.status !== "ok" && this.session) {
       log.warn(`retrying without session after error: ${result.message ?? "unknown"}`);
       this.session = null;
@@ -101,6 +118,11 @@ export class FlareSolverrClient {
       result = await this.command(payload, this.maxTimeoutMs + 15_000);
     }
 
+    return result;
+  }
+
+  async get(url: string): Promise<FlareResult> {
+    const result = await this.requestGet(url);
     if (result.status !== "ok" || !result.solution) {
       throw new Error(`FlareSolverr error: ${result.message ?? "no solution"}`);
     }
@@ -118,6 +140,41 @@ export class FlareSolverrClient {
     };
   }
 
+  /**
+   * Fetch an image inside FlareSolverr's browser (same TLS fingerprint + cookies that already
+   * passed Cloudflare). Stock FlareSolverr cannot return raw bytes, so we prefer a patched
+   * `download: true` response and fall back to a PNG screenshot of the image URL.
+   */
+  async fetchImage(url: string): Promise<FlareImageResult | null> {
+    // Patched FlareSolverr builds (PR #1708 / forks) return base64 file bytes.
+    try {
+      const downloaded = await this.requestGet(url, { download: true });
+      const file = normaliseDownload(downloaded.solution?.download);
+      if (downloaded.status === "ok" && file) {
+        const bytes = decodeBase64(file.data);
+        if (bytes && bytes.length >= 64 && !looksLikeHtml(bytes)) {
+          return {
+            bytes,
+            contentType: file.mime || sniffContentType(bytes) || "application/octet-stream",
+            strategy: "download",
+          };
+        }
+      }
+    } catch (error) {
+      log.debug(`FlareSolverr download mode unavailable: ${String(error)}`);
+    }
+
+    // Stock FlareSolverr: open the image URL in Chrome and screenshot the viewer.
+    const shot = await this.requestGet(url, { returnScreenshot: true });
+    if (shot.status !== "ok" || !shot.solution?.screenshot) {
+      log.debug(`FlareSolverr screenshot failed: ${shot.message ?? "no screenshot"}`);
+      return null;
+    }
+    const bytes = decodeBase64(shot.solution.screenshot);
+    if (!bytes || bytes.length < 64) return null;
+    return { bytes, contentType: "image/png", strategy: "screenshot" };
+  }
+
   async destroy(): Promise<void> {
     if (!this.session) return;
     const session = this.session;
@@ -129,4 +186,49 @@ export class FlareSolverrClient {
       log.debug(`session destroy failed: ${String(error)}`);
     }
   }
+}
+
+function normaliseDownload(
+  download: FlareDownload | FlareDownload[] | undefined,
+): { data: string; mime: string | null } | null {
+  const entry = Array.isArray(download) ? download[0] : download;
+  if (!entry) return null;
+  const data = entry.data ?? entry.encoded_data;
+  if (!data) return null;
+  return { data, mime: entry.mime ?? entry.mime_type ?? null };
+}
+
+function decodeBase64(value: string): Uint8Array | null {
+  try {
+    const trimmed = value.includes(",") ? value.slice(value.indexOf(",") + 1) : value;
+    return Uint8Array.from(Buffer.from(trimmed, "base64"));
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeHtml(bytes: Uint8Array): boolean {
+  const head = new TextDecoder().decode(bytes.slice(0, 64)).trim().toLowerCase();
+  return head.startsWith("<!doctype") || head.startsWith("<html") || head.includes("_cf_chl");
+}
+
+function sniffContentType(bytes: Uint8Array): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
 }

@@ -191,16 +191,16 @@ export class Fetcher {
   }
 
   /**
-   * Fetch binary content such as a cover. FlareSolverr only returns HTML, so this always
-   * goes direct; when it is blocked we refresh clearance through FlareSolverr and retry.
-   * Cooldown is respected: a pause means covers wait, they do not keep probing the CDN.
+   * Fetch binary content such as a cover. Bun's TLS fingerprint cannot reuse FlareSolverr
+   * clearance cookies, so a challenged direct download falls back to fetching inside
+   * FlareSolverr's browser (download API or a PNG screenshot of the image URL).
    */
   async getBinary(url: string, options: { referer?: string } = {}): Promise<BinaryResult> {
     if (this.limiter.inCooldown()) {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
 
-    const attempt = async (): Promise<BinaryResult | "challenged"> => {
+    const attemptDirect = async (): Promise<BinaryResult | "challenged"> => {
       if (this.limiter.inCooldown()) return "challenged";
       await this.limiter.acquire();
       if (this.limiter.inCooldown()) return "challenged";
@@ -233,32 +233,54 @@ export class Fetcher {
         throw new Error(`HTTP ${response.status} for ${url}`);
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
+      // Cloudflare sometimes returns an HTML interstitial with HTTP 200.
+      if (looksLikeChallenge(response.status, new TextDecoder().decode(bytes.slice(0, 2000)), response.headers)) {
+        this.limiter.recordChallenge();
+        this.record(url, "direct", response.status, false, true, ms);
+        return "challenged";
+      }
       this.limiter.recordSuccess();
       this.record(url, "direct", response.status, true, false, ms);
       return { url, status: response.status, bytes, contentType };
     };
 
-    const first = await attempt();
-    if (first !== "challenged") return first;
+    // Direct is worth one try when we already hold clearance; otherwise skip straight to the browser.
+    if (this.jar.hasClearance()) {
+      try {
+        const first = await attemptDirect();
+        if (first !== "challenged") return first;
+      } catch (error) {
+        if (error instanceof CooldownError) throw error;
+        log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
+      }
+    }
 
     if (this.limiter.inCooldown()) {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
     if (!this.flareConfigured) throw new ChallengeError(url);
 
-    // Visiting the page origin through FlareSolverr mints fresh clearance cookies.
-    log.debug(`refreshing clearance before retrying binary ${url}`);
-    await this.refreshClearance();
-    if (this.limiter.inCooldown()) {
-      throw new CooldownError(this.limiter.cooldownRemainingMs());
+    await this.limiter.acquire();
+    const started = Bun.nanoseconds();
+    try {
+      const image = await this.flare.fetchImage(url);
+      const ms = (Bun.nanoseconds() - started) / 1e6;
+      if (!image) {
+        this.limiter.recordChallenge();
+        this.record(url, "flaresolverr", null, false, true, ms, "no image bytes");
+        throw new ChallengeError(url);
+      }
+      this.limiter.recordSuccess();
+      this.record(url, "flaresolverr", 200, true, false, ms, image.strategy);
+      log.debug(`cover fetched via FlareSolverr ${image.strategy} (${image.bytes.length} bytes)`);
+      return { url, status: 200, bytes: image.bytes, contentType: image.contentType };
+    } catch (error) {
+      const ms = (Bun.nanoseconds() - started) / 1e6;
+      if (error instanceof ChallengeError || error instanceof CooldownError) throw error;
+      this.limiter.recordFailure();
+      this.record(url, "flaresolverr", null, false, false, ms, String(error));
+      throw error;
     }
-
-    const second = await attempt();
-    if (second === "challenged") {
-      if (this.limiter.inCooldown()) throw new CooldownError(this.limiter.cooldownRemainingMs());
-      throw new ChallengeError(url);
-    }
-    return second;
   }
 
   /** Ask FlareSolverr to solve a challenge for the origin and keep the resulting cookies. */
