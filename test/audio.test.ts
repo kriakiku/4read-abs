@@ -134,7 +134,7 @@ https://cdn.example/c.mp3
 
   test("returns null when the book has no slug or id", () => {
     const config = configSchema.parse({});
-    expect(playlistUrlFor(book({ slug: "", url: null, source_id: 0 }), config)).toBeNull();
+    expect(playlistUrlFor(book({ slug: "", url: "", source_id: 0 }), config)).toBeNull();
   });
 
   test("trackFileName uses 4-digit index and path basename, strips query", () => {
