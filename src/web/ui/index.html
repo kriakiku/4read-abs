@@ -447,6 +447,7 @@
           const meta = document.createElement("div");
           meta.className = "meta";
           const bits = [];
+          bits.push(`State: ${entry.state || "new"}`);
           if (book?.authors?.length) bits.push(`Author: ${book.authors.join(", ")}`);
           if (book?.narrators?.length) bits.push(`Narrator: ${book.narrators.join(", ")}`);
           if (book?.series_name) bits.push(`Series: ${book.series_name}${book.series_seq ? ` #${book.series_seq}` : ""}`);
@@ -480,9 +481,11 @@
             actions.append(link);
           }
           for (const [action, label] of [["accept", "Accept"], ["ignore", "Ignore"], ["reset", "Reset"]]) {
-            if (queueState === "new" && action === "reset") continue;
-            if (queueState === "accepted" && action === "accept") continue;
-            if (queueState === "ignored" && action === "ignore") continue;
+            // Gate on the entry's own state so the All tab does not re-offer Accept on approved books.
+            const state = entry.state || "new";
+            if (action === "accept" && ["accepted", "prepared", "synced"].includes(state)) continue;
+            if (action === "ignore" && state === "ignored") continue;
+            if (action === "reset" && state === "new") continue;
             const button = document.createElement("button");
             button.textContent = label;
             button.addEventListener("click", async () => {
