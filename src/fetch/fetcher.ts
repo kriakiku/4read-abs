@@ -97,11 +97,16 @@ export class Fetcher {
   }
 
   private record(url: string, strategy: Strategy | null, status: number | null, ok: boolean, challenge: boolean, ms: number, error?: string): void {
-    this.db
-      .query(
-        "insert into fetch_log (at, url, strategy, status, ok, challenge, ms, error) values (?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(nowIso(), url, strategy, status, ok ? 1 : 0, challenge ? 1 : 0, Math.round(ms), error ?? null);
+    try {
+      this.db
+        .query(
+          "insert into fetch_log (at, url, strategy, status, ok, challenge, ms, error) values (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(nowIso(), url, strategy, status, ok ? 1 : 0, challenge ? 1 : 0, Math.round(ms), error ?? null);
+    } catch (error) {
+      // Tests (and shutdown) may close the DB while an in-flight fetch still finishes.
+      log.debug(`fetch_log write skipped: ${String(error)}`);
+    }
   }
 
   /**

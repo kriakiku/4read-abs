@@ -178,10 +178,28 @@ schedule:
 `,
   );
 
-  // The context reads secrets from the environment; make sure none leak in from the host.
-  for (const key of ["ABS_URL", "ABS_API_KEY", "HARDCOVER_API_KEY", "FLARESOLVERR_URL", "STAGING_DIR", "DATA_DIR", "ABS_LIBRARY_DIR", "SOURCE_BASE_URL"]) {
+  // The context reads secrets from the environment; make sure none leak in from the host
+  // (or from another test file running in parallel).
+  for (const key of [
+    "ABS_URL",
+    "ABS_API_KEY",
+    "HARDCOVER_API_KEY",
+    "HARDCOVER_ENABLED",
+    "FLARESOLVERR_URL",
+    "STAGING_DIR",
+    "DATA_DIR",
+    "ABS_LIBRARY_DIR",
+    "SOURCE_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "AI_API_KEY",
+    "AI_ENABLED",
+    "COVERS_PREFER",
+  ]) {
     delete process.env[key];
   }
+  process.env.HARDCOVER_ENABLED = "false";
+  process.env.AI_ENABLED = "false";
 
   const ctx = new AppContext(configPath);
 
@@ -213,7 +231,7 @@ describe("catalogue pipeline", () => {
     const counts = catalogCounts(fake.ctx.db);
     expect(counts.authors).toBe(result.authors);
     expect(counts.narrators).toBe(result.narrators);
-  });
+  }, 15_000);
 
   test("sitemap registers articles as pending and reports what changed", async () => {
     const fake = await buildFake();

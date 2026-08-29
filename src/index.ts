@@ -27,13 +27,17 @@ Environment:
   ABS_LIBRARY_DIR          Audiobookshelf library as mounted for this process
   ABS_URL, ABS_API_KEY     Audiobookshelf server and API key
   HARDCOVER_API_KEY        Enables Hardcover enrichment
+  COVERS_PREFER            hardcover-first (default) | hardcover-only | source
+  OPENAI_API_KEY           Optional OpenAI-compatible key (OpenCode Go / Zen)
+  OPENAI_BASE_URL          Default https://opencode.ai/zen/go/v1
+  OPENAI_MODEL             Default mimo-v2.5 (recommended on OpenCode Go)
   FLARESOLVERR_URL         FlareSolverr endpoint, e.g. http://127.0.0.1:8191/v1
   FLARESOLVERR_MODE        auto (default) | always | never
   HOST, PORT               Web UI bind address (default: 127.0.0.1:8480)
   LOG_LEVEL                debug | info | warn | error
 `;
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 
 async function serve(ctx: AppContext): Promise<void> {
   const app = createApp(ctx);

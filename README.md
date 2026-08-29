@@ -64,11 +64,13 @@ challenge, зменшується, коли все спокійно, повто�
 Перший повний обхід ~5 000 сторінок займе години; він відновлюваний. Щоденні синхрони
 дешеві завдяки `lastmod`.
 
-Обкладинки Cloudflare блокує для звичайного HTTP-клієнта навіть із `cf_clearance`
-(інший TLS-fingerprint). Тому covers завантажуються **всередині браузера FlareSolverr**
-(режим `download`, якщо є в збірці, інакше screenshot URL картинки). Без
-`FLARESOLVERR_URL` обкладинки, найімовірніше, не з’являться; метадані все одно пишуться.
-У FlareSolverr тримайте `DISABLE_MEDIA=false`.
+Обкладинки з 4read Cloudflare блокує для звичайного HTTP-клієнта навіть із
+`cf_clearance` (інший TLS-fingerprint). За замовчуванням `covers.prefer:
+hardcover-first`: спочатку береться обкладинка з **Hardcover CDN** (без Cloudflare),
+і лише якщо її немає — спроба через FlareSolverr (`download` / screenshot URL).
+`covers.prefer: hardcover-only` повністю уникає 4read для covers. Без Hardcover і без
+`FLARESOLVERR_URL` обкладинки, найімовірніше, не з’являться; метадані все одно
+пишуться. У FlareSolverr тримайте `DISABLE_MEDIA=false`.
 
 ## Встановлення
 
@@ -193,7 +195,11 @@ cp config.example.yaml config.yaml
 | `ABS_URL`, `ABS_API_KEY` | Сервер Audiobookshelf і API-ключ |
 | `ABS_LIBRARY_DIR` | Бібліотека ABS, як її бачить цей процес |
 | `FLARESOLVERR_URL`, `FLARESOLVERR_MODE` | Обхід Cloudflare |
-| `HARDCOVER_API_KEY` | Опційне збагачення з Hardcover |
+| `HARDCOVER_API_KEY` | Опційне збагачення з Hardcover (id, ISBN, обкладинки) |
+| `COVERS_PREFER` | `hardcover-first` (за замовч.) / `hardcover-only` / `source` |
+| `OPENAI_API_KEY` або `OPENCODE_GO_API_KEY` | Опційний AI лише для неоднозначних Hardcover-матчів |
+| `OPENAI_BASE_URL` | За замовч. `https://opencode.ai/zen/go/v1` |
+| `OPENAI_MODEL` | За замовч. **`mimo-v2.5`** (рекомендована в OpenCode Go) |
 | `STAGING_DIR`, `DATA_DIR`, `CONFIG_FILE` | Шляхи |
 | `HOST`, `PORT`, `LOG_LEVEL` | Веб-інтерфейс і логи |
 
@@ -333,9 +339,35 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Hardcover (опційно)
 
-`HARDCOVER_API_KEY` — канонічні id Hardcover, ISBN/ASIN за впевненістю. Кеш постійний,
-ліміти вільні. Покриття українських видань нерівномірне: збагачення лише додає поля,
-джерело істини — ідентифікатори 4read; помилки мовчазні.
+`HARDCOVER_API_KEY` — канонічні id, ISBN/ASIN і **обкладинки з CDN**. Пошук спочатку
+йде за **англійською назвою циклу** з 4read (наприклад `All the Young Dudes` + номер
+тома), а не за українським заголовком. Кеш GraphQL постійний; ліміти вільні (~1 req/s).
+
+Якщо на Hardcover кілька років упаковані в один compilation/volume (наприклад
+`all-the-young-dudes-volume-two`), **окремі томи 4read не зливаються** в один елемент
+ABS: береться обкладинка/серія, але `hardcover_book_id` для compilation не ставиться.
+Джерело істини для ABS-структури — ідентифікатори 4read; помилки збагачення мовчазні.
+
+## AI-матч (опційно, обережно)
+
+Лише для **сірої зони** евристичного скору Hardcover (`ai.minScore`…`ai.maxScore`).
+Не викликається на кожну книгу; відповіді кешуються; ліміти `maxCallsPerHour` /
+`maxCallsPerDay`.
+
+Рекомендована модель у підписці **OpenCode Go**: **`mimo-v2.5`** — найдешевший
+стабільний chat-модель у плані (endpoint `…/chat/completions`). Альтернативи ще
+дешевші (`muse-spark-…`) або з тренуванням на промптах — не рекомендуємо.
+
+```yaml
+ai:
+  enabled: true          # або ключ у OPENAI_API_KEY / OPENCODE_GO_API_KEY
+  baseUrl: https://opencode.ai/zen/go/v1
+  model: mimo-v2.5
+  maxCallsPerHour: 10
+  maxCallsPerDay: 50
+```
+
+У промпт іде лише назва/автор/цикл і короткий список кандидатів — без описів і HTML.
 
 ## Розробка
 

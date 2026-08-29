@@ -30,6 +30,9 @@ export interface BookRow {
   asin: string | null;
   hardcover_book_id: string | null;
   hardcover_slug: string | null;
+  hardcover_cover_url: string | null;
+  hardcover_series_id: string | null;
+  hardcover_match_kind: string | null;
   detail_state: string;
   detail_error: string | null;
 }

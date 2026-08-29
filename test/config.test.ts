@@ -16,6 +16,12 @@ const KEYS = [
   "ABS_LIBRARY_DIR",
   "PORT",
   "SOURCE_MIN_INTERVAL_MS",
+  "OPENAI_API_KEY",
+  "OPENCODE_GO_API_KEY",
+  "AI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_MODEL",
+  "COVERS_PREFER",
 ];
 
 const saved = new Map<string, string | undefined>();
@@ -97,6 +103,20 @@ describe("configuration", () => {
   test("Hardcover stays off without a key", () => {
     setEnv({});
     expect(parseConfigTextWithEnv("").hardcover.enabled).toBe(false);
+  });
+
+  test("OpenAI / OpenCode Go key enables AI matching defaults", () => {
+    setEnv({ OPENAI_API_KEY: "sk-test" });
+    const config = parseConfigTextWithEnv("");
+    expect(config.ai.enabled).toBe(true);
+    expect(config.ai.apiKey).toBe("sk-test");
+    expect(config.ai.model).toBe("mimo-v2.5");
+    expect(config.covers.prefer).toBe("hardcover-first");
+  });
+
+  test("COVERS_PREFER overrides cover policy", () => {
+    setEnv({ COVERS_PREFER: "hardcover-only" });
+    expect(parseConfigTextWithEnv("").covers.prefer).toBe("hardcover-only");
   });
 
   test("saving validates first and leaves a broken file unwritten", async () => {

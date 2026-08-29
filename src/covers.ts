@@ -45,9 +45,24 @@ export async function cachedCover(book: BookWithPeople, config: Config): Promise
   return null;
 }
 
+/** Prefer Hardcover CDN when present; 4read covers are Cloudflare-gated and often unavailable. */
+export function preferredCoverUrl(book: BookWithPeople, config: Config): string | null {
+  const hardcover = book.hardcover_cover_url?.trim() || null;
+  const source = book.cover_url?.trim() || null;
+  switch (config.covers.prefer) {
+    case "hardcover-only":
+      return hardcover;
+    case "source":
+      return source;
+    case "hardcover-first":
+    default:
+      return hardcover ?? source;
+  }
+}
+
 /** Browser-facing URL that changes when the cached file changes, so stale covers are not stuck. */
 export async function coverProxyUrl(book: BookWithPeople, config: Config): Promise<string | null> {
-  if (!book.cover_url) return null;
+  if (!preferredCoverUrl(book, config) && !book.cover_url && !book.hardcover_cover_url) return null;
   const cached = await cachedCover(book, config);
   if (cached) return `/api/covers/${book.source_id}?v=${cached.version}`;
   // No file yet: still point at the endpoint so a later refresh can pick it up.
@@ -59,30 +74,79 @@ export interface DownloadedCover {
   contentType: string | null;
 }
 
+function looksLikeImage(bytes: Uint8Array, contentType: string | null): boolean {
+  if (bytes.length < 64) return false;
+  if (contentType?.startsWith("image/")) return true;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true;
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return true;
+  const head = new TextDecoder().decode(bytes.slice(0, 64)).trim().toLowerCase();
+  return !(head.startsWith("<!doctype") || head.startsWith("<html"));
+}
+
+/** Hardcover (and other CDNs) are not behind 4read's Cloudflare, so a plain fetch is enough. */
+async function downloadDirect(url: string, timeoutMs: number): Promise<DownloadedCover> {
+  const response = await fetch(url, {
+    headers: {
+      accept: "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
+      "user-agent": "4read-abs (cover fetch)",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+  const contentType = response.headers.get("content-type");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!looksLikeImage(bytes, contentType)) throw new Error(`not an image at ${url}`);
+  return { bytes, contentType };
+}
+
+function isHardcoverHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes("hardcover") || host.includes("cloudfront") || host.includes("amazonaws");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Download the cover unless the staging folder already holds the one for this exact URL.
  * Returns null when nothing needs to be written, which callers treat as "keep what is there".
+ *
+ * Prefer Hardcover CDN when configured: 4read image URLs share the site's Cloudflare zone and
+ * Bun cannot reuse FlareSolverr clearance cookies (TLS fingerprint), so source covers often fail.
  */
 export async function downloadCoverIfStale(
   fetcher: Fetcher,
   book: BookWithPeople,
   config: Config,
 ): Promise<DownloadedCover | null> {
-  if (!book.cover_url) return null;
+  const url = preferredCoverUrl(book, config);
+  if (!url) return null;
   const dir = stagingDirFor(book, config);
   const markerPath = join(dir, COVER_MARKER);
 
   try {
     const marker = await readFile(markerPath, "utf8");
-    if (marker.trim() === book.cover_url && (await cachedCover(book, config))) return null;
+    if (marker.trim() === url && (await cachedCover(book, config))) return null;
   } catch {
     // No marker yet, so this cover has not been fetched.
   }
 
-  const result = await fetcher.getBinary(book.cover_url, { referer: book.url });
+  let result: DownloadedCover;
+  const useDirect = config.covers.prefer === "hardcover-only" || isHardcoverHost(url) || url === book.hardcover_cover_url;
+
+  if (useDirect) {
+    result = await downloadDirect(url, config.source.requestTimeoutMs);
+  } else {
+    const binary = await fetcher.getBinary(url, { referer: book.url });
+    result = { bytes: binary.bytes, contentType: binary.contentType };
+  }
+
   await mkdir(dir, { recursive: true });
-  await writeFile(markerPath, book.cover_url);
-  return { bytes: result.bytes, contentType: result.contentType };
+  await writeFile(markerPath, url);
+  return result;
 }
 
 const inFlight = new Set<number>();
@@ -98,7 +162,7 @@ export function cacheCoverInBackground(
   config: Config,
   write: (cover: DownloadedCover) => Promise<void>,
 ): void {
-  if (!book.cover_url || inFlight.has(book.source_id)) return;
+  if (!preferredCoverUrl(book, config) || inFlight.has(book.source_id)) return;
   inFlight.add(book.source_id);
 
   void (async () => {

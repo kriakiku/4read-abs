@@ -348,6 +348,10 @@
         );
         pills.append(pill(`FlareSolverr: ${status.fetch.flaresolverr}`, status.fetch.flaresolverr === "not configured" ? "warn" : "ok"));
         if (status.integrations.hardcover) pills.append(pill("Hardcover", "ok"));
+        if (status.integrations.ai) pills.append(pill("AI match", "ok"));
+        if (status.integrations.coversPrefer) {
+          pills.append(pill(`Covers: ${status.integrations.coversPrefer}`, "ok"));
+        }
         if (status.fetch.cooldownRemainingMs > 0) {
           pills.append(pill(`Paused ${Math.ceil(status.fetch.cooldownRemainingMs / 1000)}s`, "err"));
         }
