@@ -349,6 +349,7 @@
         pills.append(pill(`FlareSolverr: ${status.fetch.flaresolverr}`, status.fetch.flaresolverr === "not configured" ? "warn" : "ok"));
         if (status.integrations.hardcover) pills.append(pill("Hardcover", "ok"));
         if (status.integrations.ai) pills.append(pill("AI match", "ok"));
+        if (status.integrations.audioDownload) pills.append(pill("Audio M3U", "ok"));
         if (status.integrations.coversPrefer) {
           pills.append(pill(`Covers: ${status.integrations.coversPrefer}`, "ok"));
         }

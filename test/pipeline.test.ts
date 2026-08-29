@@ -195,6 +195,7 @@ schedule:
     "AI_API_KEY",
     "AI_ENABLED",
     "COVERS_PREFER",
+    "DOWNLOAD_BASE",
   ]) {
     delete process.env[key];
   }

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { AppContext } from "../context.ts";
 import { logger } from "../log.ts";
+import { audioDownloadEnabled, ensureAudioFromPlaylist } from "../audio/m3u.ts";
 import { cachedCover, downloadCoverIfStale, preferredCoverUrl, type DownloadedCover } from "../covers.ts";
 import { setMeta } from "../db.ts";
 import { getBook, type BookWithPeople } from "../catalog/store.ts";
@@ -20,7 +21,7 @@ import {
   type Sidecar,
 } from "../abs/metadata.ts";
 import { mapAbsPathToLocal } from "../abs/pathmap.ts";
-import { placeIntoLibrary, stageBook, targetFolderFor } from "../abs/stage.ts";
+import { placeIntoLibrary, stageBook, stagingDirFor, targetFolderFor } from "../abs/stage.ts";
 import type { AbsItem } from "../abs/client.ts";
 import { setQueueState } from "./subscriptions.ts";
 
@@ -33,6 +34,18 @@ async function ensureCover(ctx: AppContext, book: BookWithPeople): Promise<Downl
   } catch (error) {
     log.warn(`cover download failed for ${book.source_id}: ${String(error)}`);
     return null;
+  }
+}
+
+async function ensureAudio(ctx: AppContext, book: BookWithPeople): Promise<number> {
+  if (!audioDownloadEnabled(ctx.config)) return 0;
+  try {
+    const dir = stagingDirFor(book, ctx.config);
+    const result = await ensureAudioFromPlaylist(book, dir, ctx.config);
+    return result?.files.length ?? 0;
+  } catch (error) {
+    log.warn(`audio fetch failed for ${book.source_id}: ${String(error)}`);
+    return 0;
   }
 }
 
@@ -98,11 +111,13 @@ async function syncOneItem(
   };
 
   const coverMissing = preferredCoverUrl(book, ctx.config) !== null && !(await coverPresent(ctx, book));
-  if (!reconciled.changed && link?.written_hash === hash && !coverMissing) {
+  const wantAudio = audioDownloadEnabled(ctx.config);
+  if (!reconciled.changed && link?.written_hash === hash && !coverMissing && !wantAudio) {
     return result;
   }
 
   const cover = await ensureCover(ctx, book);
+  const audioCount = await ensureAudio(ctx, book);
   const staged = await stageBook(book, reconciled.payload, cover, ctx.config);
 
   const targetDir = localItemPath(ctx, item);
@@ -111,7 +126,8 @@ async function syncOneItem(
     return result;
   }
 
-  const placement = await placeIntoLibrary(staged, targetDir, "metadata-only", ctx.config);
+  const mode = audioCount > 0 || staged.mediaFiles.length > 0 ? "full" : "metadata-only";
+  const placement = await placeIntoLibrary(staged, targetDir, mode, ctx.config);
   if (placement.errors.length > 0) {
     result.error = placement.errors.join("; ");
     return result;
@@ -223,6 +239,7 @@ async function createPendingFolders(ctx: AppContext, result: SyncResult): Promis
     try {
       const sidecar: Sidecar = buildSidecar(book, ctx.config);
       const cover = await ensureCover(ctx, book);
+      await ensureAudio(ctx, book);
       const staged = await stageBook(book, sidecar, cover, ctx.config);
       const targetDir = resolve(libraryRoot, targetFolderFor(book, ctx.config));
       const placement = await placeIntoLibrary(staged, targetDir, "full", ctx.config);

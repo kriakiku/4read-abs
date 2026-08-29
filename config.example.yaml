@@ -1,7 +1,7 @@
 # 4read-abs configuration.
 #
 # Secrets belong in environment variables, not here: ABS_URL, ABS_API_KEY,
-# HARDCOVER_API_KEY, FLARESOLVERR_URL, OPENAI_API_KEY (or OPENCODE_GO_API_KEY)
+# HARDCOVER_API_KEY, FLARESOLVERR_URL, DOWNLOAD_BASE, OPENAI_API_KEY (or OPENCODE_GO_API_KEY)
 # all override whatever this file says.
 # Copy to config.yaml (or point CONFIG_FILE at it) and edit.
 
@@ -77,6 +77,14 @@ ai:
   maxScore: 0.85
   maxCallsPerHour: 10
   maxCallsPerDay: 50
+
+audio:
+  # Your playlist backend. When set (or DOWNLOAD_BASE), sync requests
+  # {downloadBase}/m33u2/{slug}.m3u and downloads the listed mp3s into the book folder.
+  downloadBase: ""
+  playlistTimeoutMs: 30000
+  trackTimeoutMs: 120000
+  minFileBytes: 1024
 
 sync:
   # fill-empty     - only fill fields Audiobookshelf left empty

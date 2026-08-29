@@ -22,6 +22,7 @@ const KEYS = [
   "OPENAI_BASE_URL",
   "OPENAI_MODEL",
   "COVERS_PREFER",
+  "DOWNLOAD_BASE",
 ];
 
 const saved = new Map<string, string | undefined>();
@@ -117,6 +118,12 @@ describe("configuration", () => {
   test("COVERS_PREFER overrides cover policy", () => {
     setEnv({ COVERS_PREFER: "hardcover-only" });
     expect(parseConfigTextWithEnv("").covers.prefer).toBe("hardcover-only");
+  });
+
+  test("DOWNLOAD_BASE enables the audio playlist backend", () => {
+    setEnv({ DOWNLOAD_BASE: "http://audio.local:8080/" });
+    const config = parseConfigTextWithEnv("");
+    expect(config.audio.downloadBase).toBe("http://audio.local:8080");
   });
 
   test("saving validates first and leaves a broken file unwritten", async () => {

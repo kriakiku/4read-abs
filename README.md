@@ -200,6 +200,7 @@ cp config.example.yaml config.yaml
 | `ABS_LIBRARY_DIR` | Бібліотека ABS, як її бачить цей процес |
 | `FLARESOLVERR_URL`, `FLARESOLVERR_MODE` | Обхід Cloudflare |
 | `HARDCOVER_API_KEY` | Опційне збагачення з Hardcover (id, ISBN, обкладинки) |
+| `DOWNLOAD_BASE` | Опційний бекенд плейлистів: `GET {base}/m33u2/{slug}.m3u` → mp3 |
 | `COVERS_PREFER` | `hardcover-first` (за замовч.) / `hardcover-only` / `source` |
 | `OPENAI_API_KEY` або `OPENCODE_GO_API_KEY` | Опційний AI лише для неоднозначних Hardcover-матчів |
 | `OPENAI_BASE_URL` | За замовч. `https://opencode.ai/zen/go/v1` |
@@ -331,15 +332,33 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Обмеження обсягу
 
-Лише метадані, **без** завантаження аудіо. У `robots.txt` заборонені `/m3u/`, `/bed/` і
-`do=download`; статті й лістинги дозволені. Підписки дають метадані й сповіщення —
-медіафайли додаєте ви самі.
+4read.org **не** використовується для завантаження аудіо (`robots.txt` забороняє
+`/m3u/`, `/bed/`, `do=download`). Медіа можна підтягнути з **вашого** бекенду через
+`DOWNLOAD_BASE` (див. нижче). Інакше файли кладете в теку ABS самі.
 
 За замовчуванням `schedule.backfillAll: false`: після sitemap деталі сторінок
 завантажуються **лише** для книг із підписок / черги (facet-лістинги
 `/xfsearch/...` прив’язують автора, диктора чи цикл одразу). Увімкніть
 `backfillAll: true`, лише якщо потрібен повний каталог — інакше в логах з’являться
 сторонні новинки з sitemap.
+
+## Аудіо з вашого бекенду (опційно)
+
+Якщо підняли власний сервіс пошуку по публічних ресурсах:
+
+```bash
+DOWNLOAD_BASE=http://your-backend:8080
+```
+
+Під час `sync` / `createFolders` для кожної книги з `slug` виконується:
+
+```
+GET {DOWNLOAD_BASE}/m33u2/{slug}.m3u
+```
+
+Очікується M3U зі списком mp3 (у потрібному порядку). Файли зберігаються в staging /
+бібліотеку як `01 - ….mp3`, `02 - ….mp3`, …. Повторний sync пропускає вже скачані
+треки (маркер `.4read-audio-playlist`).
 
 ## Hardcover (опційно)
 
