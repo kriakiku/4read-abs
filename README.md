@@ -1,65 +1,103 @@
 # 4read-abs
 
-Reads audiobook metadata from [4read.org](https://4read.org) and keeps
-[Audiobookshelf](https://www.audiobookshelf.org) in step with it: genres, author, narrator,
-series and position, cover, description and duration. You can subscribe to a series, an author
-or a narrator, and new releases land in a queue in a small web interface.
+> **Дисклеймер.** Проєкт розроблено в **освітніх** цілях. Його використання може
+> порушувати [правила користування](https://4read.org) сайтом 4read.org і застосовне
+> законодавство. Використовуйте **виключно в ознайомлювальних цілях**, на свій ризик і
+> відповідальність. Автори не заохочують обхід обмежень сайту, масове збирання даних чи
+> порушення авторських прав. Інструмент **не завантажує аудіо** — лише метадані з
+> відкритих HTML-сторінок.
 
-Metadata reaches Audiobookshelf as a `metadata.json` sidecar plus a cover file, written next to
-the book. That is the highest-priority local metadata source in Audiobookshelf, so it wins over
-folder names and embedded tags without any plugin or API push.
+Читає метадані аудіокниг із [4read.org](https://4read.org) і синхронізує їх із
+[Audiobookshelf](https://www.audiobookshelf.org): жанри, автор, диктор, цикл і номер
+тому, обкладинка, опис, тривалість. Можна підписатися на цикл, автора чи диктора —
+новинки потрапляють у чергу в простому веб-інтерфейсі (**UI англійською**; назви книг,
+автори й описи залишаються українськими, як на джерелі).
 
-## What it extracts
+Метадані потрапляють у Audiobookshelf як sidecar-файли `metadata.json` і обкладинка
+поруч із книгою. Це найвищий локальний пріоритет метаданих у ABS, тож вони перебивають
+імена тек і вбудовані теги без плагінів і без push через API.
 
-The site runs DataLife Engine with schema.org microdata, so the interesting fields are
-structured rather than guessed at, and the site's own facet URLs double as stable identifiers:
+## Що витягується
 
-| Field | Source | Identifier |
+Сайт на DataLife Engine з schema.org-мікроданими, тож поля структуровані, а facet-URL
+сайту слугують стабільними ідентифікаторами:
+
+| Поле | Джерело | Ідентифікатор |
 | --- | --- | --- |
-| Genres | category links | `/fentezi/` → `fentezi` |
-| Author | `itemprop="author"` | `/xfsearch/avtor/<name>/` |
-| Narrator | `itemprop="readBy"` | `/xfsearch/chitaet/<name>/` |
-| Series and position | `schema.org/PublicationVolume` | `/xfsearch/cikl/<name>/` + `volumeNumber` |
-| Cover | `og:image` | — |
-| Duration, rating, votes | `meta[itemprop="duration"]`, rating block | — |
-| Book | canonical URL | numeric post id, e.g. `6840` |
+| Жанри | посилання категорій | `/fentezi/` → `fentezi` |
+| Автор | `itemprop="author"` | `/xfsearch/avtor/<name>/` |
+| Диктор | `itemprop="readBy"` | `/xfsearch/chitaet/<name>/` |
+| Цикл і том | `schema.org/PublicationVolume` | `/xfsearch/cikl/<name>/` + `volumeNumber` |
+| Обкладинка | `og:image` | — |
+| Тривалість, рейтинг | `meta[itemprop="duration"]`, блок рейтингу | — |
+| Книга | canonical URL | числовий id, напр. `6840` |
 
-Standalone books simply have no series block, which is handled as a normal case.
+Окремі книги без циклу — нормальний випадок.
 
-Discovery is driven by `sitemap.xml` → `news_pages.xml`, where every entry carries a `lastmod`,
-so routine syncs only refetch pages that actually changed. `avtors.html` and `readers.html`
-enumerate every author and narrator with a book count, which means the whole entity space is
-known after two requests and subscriptions can be set up before the detail crawl finishes.
+Каталог будується з `sitemap.xml` → `news_pages.xml` (у кожного запису є `lastmod`),
+тому звичайні синхронізації перечитують лише змінені сторінки. `avtors.html` і
+`readers.html` перелічують усіх авторів і дикторів із кількістю книг — після двох
+запитів уже можна налаштовувати підписки.
 
-## Cloudflare, and why FlareSolverr matters
+## Cloudflare і FlareSolverr
 
-The entire site sits behind a Cloudflare managed challenge. A plain HTTP client gets `403` on
-every path, including `robots.txt`. Without help, this tool can do nothing.
+Увесь сайт за Cloudflare managed challenge. Звичайний HTTP-клієнт отримує `403` на
+будь-який шлях, включно з `robots.txt`. Без обходу інструмент нічого не зробить.
 
-Point `FLARESOLVERR_URL` at a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)
-instance and it works: FlareSolverr drives a real browser to pass the challenge, and the
-resulting `cf_clearance` cookie is harvested and reused for ordinary requests. Covers always go
-over a direct request, because FlareSolverr only returns HTML; when a cover is blocked, the
-clearance is refreshed through FlareSolverr and the download is retried.
+Вкажіть `FLARESOLVERR_URL` на інстанс [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr):
+він проходить challenge у браузері, а `cf_clearance` перевикористовується для звичайних
+запитів. Обкладинки завжди йдуть прямим запитом (FlareSolverr повертає лише HTML); якщо
+їх блокує, clearance оновлюється через FlareSolverr і завантаження повторюється.
 
-Three modes via `FLARESOLVERR_MODE`:
+Режими `FLARESOLVERR_MODE`:
 
-- `auto` (default) — try a plain request first, escalate only when challenged
-- `always` — send every page through FlareSolverr
-- `never` — never use it
+- `auto` (за замовчуванням) — спочатку прямий запит, FlareSolverr лише після challenge
+- `always` — усі сторінки через FlareSolverr
+- `never` — ніколи не використовувати
 
-The site also reacts to burst volume rather than to a steady rate, so requests are paced by an
-adaptive limiter: the interval doubles on each challenge, decays back down while things are
-healthy, and repeated challenges trigger a long cooldown. Expect a full first-time crawl of
-roughly 5,000 pages to take hours; it is resumable and checkpointed, and day-to-day syncs are
-cheap because of `lastmod`.
+Сайт чутливий до сплесків, а не до стабільного темпу: інтервал подвоюється після
+challenge, зменшується, коли все спокійно, повторні challenge вмикають довгий cooldown.
+Перший повний обхід ~5 000 сторінок займе години; він відновлюваний. Щоденні синхрони
+дешеві завдяки `lastmod`.
 
-## Install
+## Встановлення
 
-### Binary
+### Контейнер (GHCR)
 
-Each release publishes a single self-contained `linux-amd64` executable with the Bun runtime
-baked in — no runtime dependencies.
+Образи публікуються в GitHub Container Registry workflow’ом **Container** на тегах `v*`:
+
+```bash
+docker pull ghcr.io/kriakiku/4read-abs:latest
+# або конкретна версія
+docker pull ghcr.io/kriakiku/4read-abs:0.1.0
+```
+
+Якщо репозиторій приватний, спочатку увійдіть:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u USERNAME --password-stdin
+```
+
+### Docker Compose
+
+Піднімає FlareSolverr разом із сервісом:
+
+```bash
+cp config.example.yaml config/config.yaml
+# відредагуйте config/config.yaml і шлях до бібліотеки в docker-compose.yml
+ABS_URL=http://audiobookshelf:13378 ABS_API_KEY=... docker compose up -d
+```
+
+За замовчуванням compose тягне `ghcr.io/kriakiku/4read-abs:latest`. Щоб зібрати з
+локальних джерел, розкоментуйте `build: .` у `docker-compose.yml`.
+
+Том `/library` має вказувати на **ту саму** бібліотеку, що й Audiobookshelf, і бути
+доступним на запис — метадані доставляються файлами.
+
+### Бінарник
+
+Кожен реліз також публікує self-contained `linux-amd64` виконуваний файл (Bun
+всередині):
 
 ```bash
 curl -fsSLO https://github.com/kriakiku/4read-abs/releases/latest/download/4read-abs-linux-amd64
@@ -68,92 +106,92 @@ cp config.example.yaml config.yaml
 ./4read-abs-linux-amd64 serve
 ```
 
-### Docker Compose
+## Інтеграція з Audiobookshelf
 
-Brings up FlareSolverr alongside the service:
+Схема роботи:
 
-```bash
-cp config.example.yaml config/config.yaml
-ABS_URL=http://audiobookshelf:13378 ABS_API_KEY=... docker compose up -d
-```
+1. Сервіс збирає каталог 4read і матчить книги з елементами ABS (за тегом `4read:<id>`
+   або за нормалізованими автором + назвою).
+2. У staging збирається повний набір: `metadata.json` + обкладинка (+ ваші аудіофайли,
+   якщо вже лежать у staging).
+3. У теку книги в бібліотеці ABS **копіюються** метадані й обкладинка; медіа
+   **хардлінкується** (або копіюється, якщо файлові системи різні).
+4. Через ABS API викликається rescan одного елемента — ABS підхоплює sidecar.
 
-Adjust the `/library` volume to point at the same audiobook library Audiobookshelf uses. It has
-to be writable, since metadata is delivered as files.
+### Налаштування ABS
 
-## Configuration
-
-Secrets come from the environment and override the file, so the YAML the web editor round-trips
-never holds credentials:
-
-| Variable | Purpose |
-| --- | --- |
-| `ABS_URL`, `ABS_API_KEY` | Audiobookshelf server and API key |
-| `ABS_LIBRARY_DIR` | The Audiobookshelf library as this process sees it |
-| `FLARESOLVERR_URL`, `FLARESOLVERR_MODE` | Cloudflare bypass |
-| `HARDCOVER_API_KEY` | Enables Hardcover enrichment |
-| `STAGING_DIR`, `DATA_DIR`, `CONFIG_FILE` | Paths |
-| `HOST`, `PORT`, `LOG_LEVEL` | Web interface and logging |
-
-Everything else lives in `config.yaml` (see `config.example.yaml`) and is editable from the web
-interface, which validates before saving and reloads on success. There is no authentication, so
-bind it to loopback — the default is `127.0.0.1:8480`.
-
-## Audiobookshelf setup
-
-1. **Leave the metadata precedence alone.** The default order is
-   `folderStructure, audioMetatags, nfoFile, txtFiles, opfFile, absMetadata`, applied lowest to
-   highest, so `absMetadata` (`metadata.json`) wins. If you have reordered it, move the
-   Audiobookshelf metadata file back to the top.
-2. **Mount the library.** The service writes into each book's folder, so it needs the library on
-   a writable path.
-3. **Map the paths if they differ.** Audiobookshelf reports paths from inside its own container.
-   If yours differ, translate them the way Sonarr and Radarr do:
+1. **Не змінюйте порядок пріоритету метаданих**, якщо немає потреби. Типовий порядок
+   (від нижчого до вищого):
+   `folderStructure, audioMetatags, nfoFile, txtFiles, opfFile, absMetadata`.
+   Файл `metadata.json` (`absMetadata`) має бути **найвищим**. Якщо ви його опускали —
+   поверніть нагору в налаштуваннях бібліотеки.
+2. **Змонтуйте бібліотеку** в контейнер 4read-abs із правами на запис.
+3. **Зіставте шляхи**, якщо ABS бачить інші шляхи, ніж цей процес (як у Sonarr/Radarr):
 
    ```yaml
    audiobookshelf:
      pathMappings:
-       - from: /audiobooks
-         to: /library
+       - from: /audiobooks   # шлях всередині ABS
+         to: /library        # шлях у контейнері 4read-abs
    ```
 
-4. **Create an API key** in Audiobookshelf and pass it as `ABS_API_KEY`. The API is used to list
-   items, find their folders and rescan a single item after its sidecar changes.
+4. **Створіть API-ключ** у Audiobookshelf і передайте як `ABS_API_KEY`. API потрібен
+   лише щоб перелічити елементи, знайти їхні теки й зробити rescan після запису sidecar.
+   Самі метадані **не** пушаться через API — лише файли.
 
-### How writes are decided
+### Політика запису
 
-`sync.writePolicy` controls how much the service is allowed to touch:
+`sync.writePolicy`:
 
-- `fill-empty` — only populate fields Audiobookshelf left empty
-- `overwrite-ours` (default) — replace values we wrote last time, but leave anything edited by
-  hand in the Audiobookshelf UI alone
-- `overwrite-all` — always write our values
+| Значення | Поведінка |
+| --- | --- |
+| `fill-empty` | Заповнює лише порожні поля ABS |
+| `overwrite-ours` (за замовчуванням) | Перезаписує те, що писали ми раніше; ручні правки в UI ABS зберігаються |
+| `overwrite-all` | Завжди пише наші значення |
 
-Each item gets a `4read:<id>` tag, which is how it is re-identified on later runs without fuzzy
-matching. Items without that tag are matched on normalised title and author, tolerating both
-Cyrillic and transliterated spellings; anything below `sync.matchThreshold` is left for you to
-confirm in the web interface rather than guessed at.
+Кожному елементу ставиться тег `4read:<id>` для точного повторного розпізнавання.
+Без тега — матч за нормалізованими назвою й автором (кирилиця й трансліт); нижче
+`sync.matchThreshold` — лише ручна прив’язка в веб-UI, без «вгадування».
 
-## Staging and hardlinks
+### Staging і hardlink
 
-Every book is assembled in its own folder under `STAGING_DIR` first and only published to the
-library once it is complete, so Audiobookshelf never sees a half-written book.
+Кожна книга спочатку збирається в окремій теці під `STAGING_DIR` і лише потім
+публікується в бібліотеку — ABS ніколи не бачить напівзаписану книгу.
 
-Publishing treats the two kinds of file differently, and the distinction matters:
+- **Медіа** — hardlink (без подвійного зберігання). Якщо ціль на іншій ФС — fallback
+  на copy (`sync.onCrossDevice`). Тримайте staging і бібліотеку на одній ФС. Примусово:
+  `sync.linkMode: copy`.
+- **`metadata.json` і обкладинка завжди копіюються.** ABS перезаписує `metadata.json`
+  на місці при ручному редагуванні; hardlink зіпсував би staging-копію.
 
-- **Media files are hardlinked**, so nothing is stored twice. If the target is on another
-  filesystem the link falls back to a copy (`sync.onCrossDevice`), so keep staging and the
-  library on the same filesystem to get the benefit. Set `sync.linkMode: copy` to always copy.
-- **`metadata.json` and the cover are copied.** Audiobookshelf rewrites `metadata.json` in place
-  when you edit an item, and a hardlink would silently rewrite the staging copy too.
+З увімкненим `sync.createFolders` прийняті з черги книги, яких ще немає в бібліотеці,
+отримують теку за `sync.folderTemplate` уже з метаданими й обкладинкою — аудіо можна
+додати пізніше.
 
-If you drop your own audio files into a staged folder, they are hardlinked along with the rest
-the next time the book is published.
+### Обкладинки в UI
 
-With `sync.createFolders` enabled, books you accept from the queue that are not in the library
-yet get a folder prepared from `sync.folderTemplate` with metadata and cover already in place,
-ready for audio to be added.
+Веб-інтерфейс **не** тягне зображення з 4read.org у браузері (той самий Cloudflare).
+Обкладинки віддаються з локального staging-кешу: `/api/covers/<id>?v=…`.
 
-## Subscriptions
+## Конфігурація
+
+Секрети — лише зі змінних оточення (перебивають YAML), щоб редактор у веб-UI ніколи не
+зберігав облікові дані:
+
+| Змінна | Призначення |
+| --- | --- |
+| `ABS_URL`, `ABS_API_KEY` | Сервер Audiobookshelf і API-ключ |
+| `ABS_LIBRARY_DIR` | Бібліотека ABS, як її бачить цей процес |
+| `FLARESOLVERR_URL`, `FLARESOLVERR_MODE` | Обхід Cloudflare |
+| `HARDCOVER_API_KEY` | Опційне збагачення з Hardcover |
+| `STAGING_DIR`, `DATA_DIR`, `CONFIG_FILE` | Шляхи |
+| `HOST`, `PORT`, `LOG_LEVEL` | Веб-інтерфейс і логи |
+
+Решта — у `config.yaml` (див. `config.example.yaml`), редагується з веб-UI з
+валідацією й reload. **Автентифікації немає** — біндіть на loopback
+(`127.0.0.1:8480` за замовчуванням; у Docker — `127.0.0.1:8480:8480`).
+
+### Підписки
 
 ```yaml
 narrators:
@@ -171,56 +209,63 @@ subscriptions:
     value: "Характерник"
 ```
 
-Subscriptions match on `author`, `narrator`, `series`, `genre` or `tag`, by identifier or by
-display name.
+Типи: `author`, `narrator`, `series`, `genre`, `tag` — за ідентифікатором або
+відображуваною назвою.
 
-The same book often exists in several readings. Those are grouped into one work — the grouping
-folds the different ways a volume is written (`Книга 2`, `(Т. 2)`, `Частина II`) onto one token,
-so different volumes stay separate while different spellings converge — and one reading is
-chosen. Narrator preference dominates deliberately: a favourite narrator wins even over a better
-rated alternative, blocked narrators are dropped unless nothing else exists, and rating only
-breaks ties, damped by the vote count so a single enthusiastic vote cannot win.
+Кілька озвучень однієї книги згортаються в один твір (різні форми тома на кшталт
+`Книга 2`, `(Т. 2)`, `Частина II` нормалізуються). Пріоритет диктора навмисно вищий за
+рейтинг; заблоковані диктори відкидаються, якщо є альтернатива. Книги, що вже є в
+бібліотеці, не показуються як новини — для них оновлюються лише метадані.
 
-Books already in your library are not surfaced as news; their metadata is refreshed instead.
+## Публікація релізів і контейнера
 
-## Hardcover enrichment
+| Подія | Workflow | Результат |
+| --- | --- | --- |
+| Тег `v*` або ручний запуск | `Release` | Бінарник `4read-abs-linux-amd64` + tar.gz у GitHub Releases |
+| Тег `v*` або ручний запуск | `Container` | Образ `ghcr.io/kriakiku/4read-abs:<tag>`, `:latest` і `:<semver>` |
 
-Optional. Set `HARDCOVER_API_KEY` and the service looks up canonical Hardcover ids and fills in
-ISBN and ASIN when it is confident, which lets Audiobookshelf match against other providers
-afterwards. Results are cached permanently and requests are paced well inside the free tier.
-Coverage of Ukrainian editions is patchy, so this only ever adds information: the site's own
-identifiers remain the source of truth and every failure is silent.
+Приклад:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## CLI
 
-Useful for cron instead of the built-in scheduler:
+Зручно для cron замість вбудованого планувальника:
 
 ```
-4read-abs serve           Web interface and scheduler (default)
-4read-abs seed            Fetch the author and narrator indexes
-4read-abs sitemap         Reconcile the catalogue with the sitemap
-4read-abs backfill [n]    Fetch up to n pending detail pages
-4read-abs subscriptions   Re-evaluate subscriptions and refill the queue
-4read-abs sync            Write sidecars into the library
-4read-abs once            sitemap, then subscriptions, then sync
+4read-abs serve           Веб-UI і планувальник (за замовчуванням)
+4read-abs seed            Індекси авторів і дикторів
+4read-abs sitemap         Звірка каталогу з sitemap
+4read-abs backfill [n]    До n сторінок деталей у черзі
+4read-abs subscriptions   Перерахунок підписок і черги новинок
+4read-abs sync            Запис sidecar у бібліотеку
+4read-abs once            sitemap → subscriptions → sync
 ```
 
-## Scope
+## Обмеження обсягу
 
-This tool handles metadata only and does not download audio. The site's `robots.txt` disallows
-`/m3u/`, `/bed/` and `do=download` — the audio endpoints — while permitting the article and
-listing pages it reads. Subscriptions produce metadata and notifications; you supply the media.
+Лише метадані, **без** завантаження аудіо. У `robots.txt` заборонені `/m3u/`, `/bed/` і
+`do=download`; статті й лістинги дозволені. Підписки дають метадані й сповіщення —
+медіафайли додаєте ви самі.
 
-## Development
+## Hardcover (опційно)
+
+`HARDCOVER_API_KEY` — канонічні id Hardcover, ISBN/ASIN за впевненістю. Кеш постійний,
+ліміти вільні. Покриття українських видань нерівномірне: збагачення лише додає поля,
+джерело істини — ідентифікатори 4read; помилки мовчазні.
+
+## Розробка
 
 ```bash
 bun install
-bun test          # 110 tests, no network access required
+bun test          # офлайн-тести, без мережі
 bun run typecheck
 bun run dev
-bun run build     # dist/4read-abs, a single linux-amd64 executable
+bun run build     # dist/4read-abs (linux-amd64)
 ```
 
-Parsers are tested against real pages captured from the site under `test/fixtures/`, and the
-end-to-end tests run the whole pipeline against a mock 4read.org and a mock Audiobookshelf, so
-the suite is fully offline.
+Парсери перевіряються на реальних збережених сторінках у `test/fixtures/`; e2e — проти
+мок 4read.org і мок Audiobookshelf.

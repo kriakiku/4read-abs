@@ -1,8 +1,9 @@
 services:
   4read-abs:
-    build: .
-    # Or use a published binary instead: see the README.
-    image: 4read-abs:local
+    # Published by .github/workflows/container.yml on v* tags.
+    image: ghcr.io/kriakiku/4read-abs:latest
+    # Uncomment to build from this checkout instead of pulling GHCR:
+    # build: .
     restart: unless-stopped
     depends_on:
       - flaresolverr
