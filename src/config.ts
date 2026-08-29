@@ -21,6 +21,8 @@ const pathMappingSchema = z.object({
   to: z.string().min(1),
 });
 
+// Sections use `prefault` rather than `default`: zod v4 hands back a `default` value as-is,
+// so an omitted section would arrive empty instead of filled with its field defaults.
 export const configSchema = z.object({
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 
@@ -29,7 +31,7 @@ export const configSchema = z.object({
       host: z.string().default("127.0.0.1"),
       port: z.number().int().min(1).max(65535).default(8480),
     })
-    .default({}),
+    .prefault({}),
 
   paths: z
     .object({
@@ -38,7 +40,7 @@ export const configSchema = z.object({
       /** Where the Audiobookshelf library is mounted for this process. */
       absLibrary: z.string().default(""),
     })
-    .default({}),
+    .prefault({}),
 
   source: z
     .object({
@@ -55,7 +57,7 @@ export const configSchema = z.object({
           "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         ),
     })
-    .default({}),
+    .prefault({}),
 
   flaresolverr: z
     .object({
@@ -66,7 +68,7 @@ export const configSchema = z.object({
       /** Reuse a FlareSolverr session so clearance survives between requests. */
       useSession: z.boolean().default(true),
     })
-    .default({}),
+    .prefault({}),
 
   audiobookshelf: z
     .object({
@@ -80,7 +82,7 @@ export const configSchema = z.object({
       /** Rewrites tags inside the audio files themselves. Off by default. */
       embedIntoAudioFiles: z.boolean().default(false),
     })
-    .default({}),
+    .prefault({}),
 
   hardcover: z
     .object({
@@ -88,7 +90,7 @@ export const configSchema = z.object({
       apiKey: z.string().default(""),
       endpoint: z.string().default("https://api.hardcover.app/v1/graphql"),
     })
-    .default({}),
+    .prefault({}),
 
   sync: z
     .object({
@@ -109,7 +111,7 @@ export const configSchema = z.object({
       /** Minimum title/author similarity before an unlabelled item is auto-linked. */
       matchThreshold: z.number().min(0).max(1).default(0.86),
     })
-    .default({}),
+    .prefault({}),
 
   narrators: z
     .object({
@@ -117,7 +119,7 @@ export const configSchema = z.object({
       prefer: z.array(z.string()).default([]),
       block: z.array(z.string()).default([]),
     })
-    .default({}),
+    .prefault({}),
 
   subscriptions: z.array(subscriptionSchema).default([]),
 
@@ -130,7 +132,7 @@ export const configSchema = z.object({
       backfillBatch: z.number().int().min(0).default(25),
       syncMinutes: z.number().int().min(0).default(180),
     })
-    .default({}),
+    .prefault({}),
 });
 
 export type Config = z.infer<typeof configSchema>;

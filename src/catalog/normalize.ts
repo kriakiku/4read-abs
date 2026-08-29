@@ -79,9 +79,12 @@ export function normaliseName(name: string): string {
  * Volume markers are written many different ways on this source ("Книга 2", "(Т. 2)",
  * "Частина II"). They are folded into a single `#n` token instead of being dropped, so
  * different volumes of one work stay distinct while different spellings converge.
+ *
+ * The boundaries are explicit Unicode lookarounds rather than `\b`, which JavaScript defines
+ * over ASCII word characters only and so never fires next to Cyrillic text.
  */
 const VOLUME_PATTERN =
-  /\b(?:книга|книжка|кн|том|т|частина|частина|част|ч|part|pt|book|bk|vol|volume)\s*\.?\s*(\d{1,3}|[ivxlcdm]{1,6})(?=\b|$)/giu;
+  /(?<![\p{L}\p{N}])(?:книжка|книга|кн|том|т|частина|част|ч|part|pt|book|bk|volume|vol)\s*\.?\s*(\d{1,3}|[ivxlcdm]{1,6})(?![\p{L}\p{N}])/giu;
 
 export function normaliseTitle(title: string): string {
   let value = title.toLowerCase().replace(/^\s*аудіокнига\s+/u, "");

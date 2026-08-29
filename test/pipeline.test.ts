@@ -1,0 +1,476 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AppContext } from "../src/context.ts";
+import { catalogCounts, getBook, booksForSubscription } from "../src/catalog/store.ts";
+import { backfillDetails, seedEntities, syncSitemap } from "../src/jobs/crawl.ts";
+import { listQueue, refreshQueue, setQueueState } from "../src/jobs/subscriptions.ts";
+import { syncLibrary } from "../src/jobs/sync.ts";
+import { createApp } from "../src/web/server.ts";
+
+const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}`, import.meta.url)).text();
+
+interface Fake {
+  dir: string;
+  ctx: AppContext;
+  origin: ReturnType<typeof Bun.serve>;
+  abs: ReturnType<typeof Bun.serve>;
+  scanned: string[];
+  close: () => Promise<void>;
+}
+
+const fakes: Fake[] = [];
+
+afterEach(async () => {
+  while (fakes.length > 0) {
+    const fake = fakes.pop();
+    if (fake) await fake.close();
+  }
+});
+
+/**
+ * A fake 4read.org that serves the captured fixtures, plus a fake Audiobookshelf whose one
+ * library item matches the HPMOR volume, so the whole pipeline can run offline.
+ */
+async function buildFake(options: { absItems?: unknown[] } = {}): Promise<Fake> {
+  const dir = await mkdtemp(join(tmpdir(), "4read-abs-pipeline-"));
+  const library = join(dir, "library");
+  const itemPath = join(library, "Yudkovski", "HPMOR 2");
+  const scanned: string[] = [];
+
+  const [book6840, book3130, authors, readers] = await Promise.all([
+    fixture("book-6840-vsi-molodi-chuvaki.html"),
+    fixture("book-3130-hpmor-2.html"),
+    fixture("index-authors.html"),
+    fixture("index-readers.html"),
+  ]);
+
+  // Filled in once the port is known; the handler only reads it per request.
+  let originBase = "";
+
+  const origin = Bun.serve({
+    port: 0,
+    fetch(request): Response {
+      const { pathname } = new URL(request.url);
+      // Captured pages carry absolute https://4read.org links, including the cover in
+      // og:image. Repointing them at this server makes the mock a faithful stand-in.
+      const send = (body: string, type = "text/html"): Response =>
+        new Response(body.replaceAll("https://4read.org/", originBase), {
+          headers: { "content-type": type },
+        });
+
+      if (pathname === "/avtors.html") return send(authors);
+      if (pathname === "/readers.html") return send(readers);
+      if (pathname === "/sitemap.xml") {
+        return send(
+          `<?xml version="1.0"?><sitemapindex><sitemap><loc>${originBase}news_pages.xml</loc></sitemap></sitemapindex>`,
+          "application/xml",
+        );
+      }
+      if (pathname === "/news_pages.xml") {
+        return send(
+          `<?xml version="1.0"?><urlset>
+             <url><loc>${originBase}6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.html</loc><lastmod>2026-01-05T10:00:00+02:00</lastmod></url>
+             <url><loc>${originBase}3130-yudkovski-elizer-garri-potter-i-metody-racionalnosty-t-2.html</loc><lastmod>2023-09-01T10:00:00+03:00</lastmod></url>
+             <url><loc>${originBase}8130-diktoram-nagolosi.html</loc><lastmod>2026-08-01T10:00:00+03:00</lastmod></url>
+           </urlset>`,
+          "application/xml",
+        );
+      }
+      if (pathname.startsWith("/6840-")) return send(book6840);
+      if (pathname.startsWith("/3130-")) return send(book3130);
+      // A blog post: same URL shape, but no book markup.
+      if (pathname.startsWith("/8130-")) return send("<html><body><h1>Дикторам - наголоси!</h1></body></html>");
+      if (pathname.startsWith("/uploads/")) {
+        return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/webp" } });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  originBase = `http://localhost:${origin.port}/`;
+
+  const items =
+    options.absItems ??
+    [
+      {
+        id: "li_hpmor2",
+        libraryId: "lib_books",
+        path: itemPath,
+        relPath: "Yudkovski/HPMOR 2",
+        media: {
+          tags: [],
+          numAudioFiles: 2,
+          metadata: {
+            title: "Гаррі Поттер і методи раціональности. Книга 2",
+            authorName: "Елізер Юдковскі",
+            narratorName: "",
+            seriesName: "",
+            genres: [],
+          },
+        },
+      },
+    ];
+
+  const abs = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const { pathname } = new URL(request.url);
+      if (request.headers.get("authorization") !== "Bearer test-key") {
+        return new Response("unauthorized", { status: 401 });
+      }
+      if (pathname === "/api/ping") return Response.json({ success: true });
+      if (pathname === "/api/libraries") {
+        return Response.json({ libraries: [{ id: "lib_books", name: "Books", mediaType: "book" }] });
+      }
+      if (pathname === "/api/libraries/lib_books/items") return Response.json({ results: items, total: items.length });
+      if (pathname === "/api/libraries/lib_books/scan") return Response.json({ ok: true });
+      const itemScan = /^\/api\/items\/([^/]+)\/scan$/.exec(pathname);
+      if (itemScan) {
+        scanned.push(itemScan[1]!);
+        return Response.json({ result: "UPDATED" });
+      }
+      const single = /^\/api\/items\/([^/]+)$/.exec(pathname);
+      if (single) {
+        const found = (items as Array<{ id: string }>).find((entry) => entry.id === single[1]);
+        return found ? Response.json(found) : new Response("not found", { status: 404 });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+
+  const configPath = join(dir, "config.yaml");
+  await Bun.write(
+    configPath,
+    `logLevel: warn
+paths:
+  data: ${JSON.stringify(join(dir, "data"))}
+  staging: ${JSON.stringify(join(dir, "staging"))}
+  absLibrary: ${JSON.stringify(library)}
+source:
+  baseUrl: "http://localhost:${origin.port}"
+  minIntervalMs: 0
+audiobookshelf:
+  url: "http://localhost:${abs.port}"
+  apiKey: test-key
+narrators:
+  prefer:
+    - Характерник
+subscriptions:
+  - type: narrator
+    value: Характерник
+  - type: series
+    value: all the young dudes
+schedule:
+  incrementalMinutes: 0
+  backfillEnabled: false
+  syncMinutes: 0
+`,
+  );
+
+  // The context reads secrets from the environment; make sure none leak in from the host.
+  for (const key of ["ABS_URL", "ABS_API_KEY", "HARDCOVER_API_KEY", "FLARESOLVERR_URL", "STAGING_DIR", "DATA_DIR", "ABS_LIBRARY_DIR", "SOURCE_BASE_URL"]) {
+    delete process.env[key];
+  }
+
+  const ctx = new AppContext(configPath);
+
+  const fake: Fake = {
+    dir,
+    ctx,
+    origin,
+    abs,
+    scanned,
+    close: async () => {
+      await ctx.close();
+      await origin.stop(true);
+      await abs.stop(true);
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+  fakes.push(fake);
+  return fake;
+}
+
+describe("catalogue pipeline", () => {
+  test("seeds entities from the two index pages", async () => {
+    const fake = await buildFake();
+    const result = await seedEntities(fake.ctx);
+
+    expect(result.authors).toBeGreaterThan(1000);
+    expect(result.narrators).toBeGreaterThan(500);
+
+    const counts = catalogCounts(fake.ctx.db);
+    expect(counts.authors).toBe(result.authors);
+    expect(counts.narrators).toBe(result.narrators);
+  });
+
+  test("sitemap registers articles as pending and reports what changed", async () => {
+    const fake = await buildFake();
+    const first = await syncSitemap(fake.ctx);
+    expect(first.total).toBe(3);
+    expect(first.added).toBe(3);
+
+    // Re-running with unchanged lastmod values must not queue anything again.
+    const second = await syncSitemap(fake.ctx);
+    expect(second.added).toBe(0);
+    expect(second.stale).toBe(0);
+  });
+
+  test("backfill stores full detail and skips non-book pages", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    const result = await backfillDetails(fake.ctx, 10);
+
+    expect(result.ok).toBe(2);
+    expect(result.skipped).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const book = getBook(fake.ctx.db, 6840)!;
+    expect(book.title).toBe("Всі молоді чуваки: Перший рік");
+    expect(book.authors).toEqual(["MsKingBean89"]);
+    expect(book.narrators).toEqual(["BooGaGaрня"]);
+    expect(book.series_name).toBe("All the Young Dudes");
+    expect(book.series_seq).toBe("1");
+    expect(book.genres).toContain("Фентезі");
+    expect(book.duration_sec).toBe(19732);
+    expect(book.work_key).not.toBeNull();
+
+    // Sibling volumes referenced in the description become pending entries of their own.
+    const sibling = getBook(fake.ctx.db, 6862);
+    expect(sibling?.detail_state).toBe("pending");
+  });
+
+  test("subscription lookups work by key and by display name", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+
+    expect(booksForSubscription(fake.ctx.db, "narrator", "Характерник").map((b) => b.source_id)).toEqual([3130]);
+    expect(booksForSubscription(fake.ctx.db, "narrator", "характерник").map((b) => b.source_id)).toEqual([3130]);
+    expect(booksForSubscription(fake.ctx.db, "series", "All the Young Dudes").map((b) => b.source_id)).toEqual([6840]);
+    expect(booksForSubscription(fake.ctx.db, "genre", "fentezi").length).toBe(2);
+    expect(booksForSubscription(fake.ctx.db, "author", "MsKingBean89").map((b) => b.source_id)).toEqual([6840]);
+  });
+
+  test("the queue fills from subscriptions and records why", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    const result = await refreshQueue(fake.ctx);
+
+    expect(result.subscriptions).toBe(2);
+    expect(result.queued).toBe(2);
+
+    const entries = listQueue(fake.ctx, "new");
+    const hpmor = entries.find((entry) => entry.source_id === 3130)!;
+    expect(hpmor.reason).toContain("narrator:Характерник");
+    expect(hpmor.book?.title).toContain("Книга 2");
+  });
+
+  test("accept and ignore move entries between states", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    await refreshQueue(fake.ctx);
+
+    setQueueState(fake.ctx, 3130, "ignored");
+    expect(listQueue(fake.ctx, "new").some((entry) => entry.source_id === 3130)).toBe(false);
+    expect(listQueue(fake.ctx, "ignored")).toHaveLength(1);
+  });
+});
+
+describe("audiobookshelf sync", () => {
+  test("matches an item, writes the sidecar and triggers a rescan", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+
+    const result = await syncLibrary(fake.ctx);
+
+    expect(result.errors).toEqual([]);
+    expect(result.matched).toBe(1);
+    expect(result.written).toBe(1);
+    expect(fake.scanned).toEqual(["li_hpmor2"]);
+
+    const written = JSON.parse(
+      await readFile(join(fake.dir, "library", "Yudkovski", "HPMOR 2", "metadata.json"), "utf8"),
+    );
+    expect(written.narrators).toEqual(["Характерник"]);
+    expect(written.series).toEqual(["Гаррі Поттер #2"]);
+    expect(written.genres).toContain("Фентезі");
+    expect(written.tags).toContain("4read:3130");
+    expect(written.language).toBe("ukr");
+
+    // The cover travels with the sidecar.
+    const cover = Bun.file(join(fake.dir, "library", "Yudkovski", "HPMOR 2", "cover.webp"));
+    expect(await cover.exists()).toBe(true);
+  });
+
+  test("a second sync writes nothing and does not rescan", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    await syncLibrary(fake.ctx);
+    fake.scanned.length = 0;
+
+    const again = await syncLibrary(fake.ctx);
+    expect(again.written).toBe(0);
+    expect(fake.scanned).toEqual([]);
+  });
+
+  test("an item tagged with our marker is matched exactly, even with a different title", async () => {
+    const fake = await buildFake({
+      absItems: [
+        {
+          id: "li_renamed",
+          libraryId: "lib_books",
+          path: join((await mkdtemp(join(tmpdir(), "4read-abs-item-"))), "Renamed"),
+          relPath: "Renamed",
+          media: {
+            tags: ["4read:6840"],
+            numAudioFiles: 1,
+            metadata: { title: "Completely Different Title", authorName: "Nobody" },
+          },
+        },
+      ],
+    });
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+
+    const result = await syncLibrary(fake.ctx);
+    expect(result.matched).toBe(1);
+    expect(result.outcomes[0]?.sourceId).toBe(6840);
+  });
+
+  test("items that cannot be matched are reported rather than guessed", async () => {
+    const fake = await buildFake({
+      absItems: [
+        {
+          id: "li_unknown",
+          libraryId: "lib_books",
+          path: "/audiobooks/Unknown/Thing",
+          relPath: "Unknown/Thing",
+          media: { tags: [], metadata: { title: "Zzz Unrelated Book", authorName: "Nobody At All" } },
+        },
+      ],
+    });
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+
+    const result = await syncLibrary(fake.ctx);
+    expect(result.matched).toBe(0);
+    expect(result.unmatched).toBe(1);
+  });
+
+  test("createFolders prepares a folder for an accepted book", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    await refreshQueue(fake.ctx);
+    setQueueState(fake.ctx, 6840, "accepted");
+
+    fake.ctx.config.sync.createFolders = true;
+    const result = await syncLibrary(fake.ctx);
+    expect(result.created).toBe(1);
+
+    // The colon is dropped: folder segments have to be safe on every filesystem.
+    const folder = join(
+      fake.dir,
+      "library",
+      "MsKingBean89",
+      "All the Young Dudes",
+      "1 - Всі молоді чуваки Перший рік",
+    );
+    const written = JSON.parse(await readFile(join(folder, "metadata.json"), "utf8"));
+    expect(written.title).toBe("Всі молоді чуваки: Перший рік");
+    expect(written.series).toEqual(["All the Young Dudes #1"]);
+  });
+});
+
+describe("http api", () => {
+  test("status reports the catalogue, integrations and jobs", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    const app = createApp(fake.ctx);
+
+    const response = await app.request("/api/status");
+    expect(response.status).toBe(200);
+    const status = (await response.json()) as Record<string, any>;
+
+    expect(status.catalog.books).toBe(3);
+    expect(status.integrations.audiobookshelf).toBe(true);
+    expect(status.subscriptions).toHaveLength(2);
+    expect(status.jobs.map((job: { name: string }) => job.name)).toContain("sync");
+  });
+
+  test("the config endpoint round trips an edit and reloads it", async () => {
+    const fake = await buildFake();
+    const app = createApp(fake.ctx);
+
+    const before = (await (await app.request("/api/config")).json()) as { text: string };
+    expect(before.text).toContain("subscriptions:");
+
+    const edited = before.text.replace("logLevel: warn", "logLevel: error");
+    const save = await app.request("/api/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: edited }),
+    });
+    expect(save.status).toBe(200);
+    expect(fake.ctx.config.logLevel).toBe("error");
+  });
+
+  test("invalid yaml is rejected without changing the running config", async () => {
+    const fake = await buildFake();
+    const app = createApp(fake.ctx);
+
+    const response = await app.request("/api/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "subscriptions:\n  - type: nope\n    value: x\n" }),
+    });
+    expect(response.status).toBe(400);
+    expect(fake.ctx.config.subscriptions).toHaveLength(2);
+  });
+
+  test("queue actions are exposed over http", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    await refreshQueue(fake.ctx);
+    const app = createApp(fake.ctx);
+
+    const accept = await app.request("/api/queue/3130/accept", { method: "POST" });
+    expect(accept.status).toBe(200);
+
+    const listed = (await (await app.request("/api/queue?state=accepted")).json()) as { entries: unknown[] };
+    expect(listed.entries).toHaveLength(1);
+
+    const bad = await app.request("/api/queue/3130/explode", { method: "POST" });
+    expect(bad.status).toBe(400);
+  });
+
+  test("search finds catalogue entries for manual linking", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    const app = createApp(fake.ctx);
+
+    const response = await app.request("/api/search?q=молоді");
+    const body = (await response.json()) as { results: Array<{ source_id: number }> };
+    expect(body.results.map((entry) => entry.source_id)).toContain(6840);
+  });
+
+  test("the ui is served and unknown jobs are refused", async () => {
+    const fake = await buildFake();
+    const app = createApp(fake.ctx);
+
+    const page = await app.request("/");
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("4read");
+
+    const unknown = await app.request("/api/jobs/nonsense/run", { method: "POST" });
+    expect(unknown.status).toBe(404);
+  });
+});

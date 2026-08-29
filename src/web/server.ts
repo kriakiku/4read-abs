@@ -1,5 +1,7 @@
 import { Hono } from "hono";
-import indexHtml from "./ui/index.html" with { type: "text" };
+// Imported as text so the page is embedded in the compiled binary. Bun types any `.html`
+// import as an HTMLBundle regardless of the attribute, hence the cast.
+import indexHtmlAsset from "./ui/index.html" with { type: "text" };
 import type { AppContext } from "../context.ts";
 import { parseConfigText, redactConfigText, saveConfigText } from "../config.ts";
 import { catalogCounts, getBook } from "../catalog/store.ts";
@@ -12,6 +14,8 @@ import { removeLink } from "../abs/matcher.ts";
 import { logger } from "../log.ts";
 
 const log = logger("web");
+
+const indexHtml = indexHtmlAsset as unknown as string;
 
 const JOBS = ["seed", "sitemap", "backfill", "subscriptions", "sync"] as const;
 type JobName = (typeof JOBS)[number];
@@ -164,7 +168,7 @@ export function createApp(ctx: AppContext): Hono {
     if (!JOBS.includes(name)) return c.json({ error: `unknown job ${name}` }, 404);
     if (ctx.jobStatus(name).running) return c.json({ ok: false, error: "already running" }, 409);
 
-    const task = () => {
+    const task = (): Promise<unknown> => {
       switch (name) {
         case "seed":
           return seedEntities(ctx);
