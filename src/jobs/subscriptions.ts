@@ -4,7 +4,9 @@ import { logger } from "../log.ts";
 import { groupByWork, type WorkGroup } from "../catalog/select.ts";
 import { booksForSubscription, getBook, type BookWithPeople } from "../catalog/store.ts";
 import { coverProxyUrl } from "../covers.ts";
-import { getLinkBySource } from "../abs/matcher.ts";
+import { getLinkBySource, removeLinkBySource } from "../abs/matcher.ts";
+import { stagingDirFor } from "../abs/stage.ts";
+import { clearDownloadedAudio } from "../audio/m3u.ts";
 import { crawlFacet } from "./crawl.ts";
 
 const log = logger("subs");
@@ -161,6 +163,35 @@ export function setQueueState(ctx: AppContext, sourceId: number, state: string, 
   ctx.db
     .query("update queue set state = ?, note = coalesce(?, note), updated_at = ? where source_id = ?")
     .run(state, note ?? null, nowIso(), sourceId);
+}
+
+/**
+ * Remove a queue entry so "Check subscriptions" can enqueue it again, and clear local
+ * audio caches so the next accept/sync re-downloads media. Metadata/covers stay.
+ */
+export async function deleteQueueEntry(
+  ctx: AppContext,
+  sourceId: number,
+): Promise<{ ok: boolean; clearedAudio: number }> {
+  const existing = ctx.db
+    .query<QueueRow, [number]>("select * from queue where source_id = ?")
+    .get(sourceId);
+
+  ctx.db.query("delete from queue where source_id = ?").run(sourceId);
+  removeLinkBySource(ctx.db, sourceId);
+
+  let clearedAudio = 0;
+  const book = getBook(ctx.db, sourceId);
+  if (book) {
+    clearedAudio += await clearDownloadedAudio(stagingDirFor(book, ctx.config));
+  }
+  const preparedDir = existing?.note?.trim();
+  if (preparedDir) {
+    clearedAudio += await clearDownloadedAudio(preparedDir);
+  }
+
+  log.info(`deleted queue entry ${sourceId} (cleared ${clearedAudio} audio file(s))`);
+  return { ok: true, clearedAudio };
 }
 
 export function queueCounts(ctx: AppContext): Record<string, number> {

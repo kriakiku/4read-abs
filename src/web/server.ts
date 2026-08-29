@@ -11,7 +11,7 @@ import { stageBook } from "../abs/stage.ts";
 import { getMeta } from "../db.ts";
 import { recentLogs } from "../log.ts";
 import { backfillDetails, seedEntities, syncSitemap } from "../jobs/crawl.ts";
-import { listQueue, queueCounts, refreshQueue, setQueueState } from "../jobs/subscriptions.ts";
+import { listQueue, queueCounts, refreshQueue, setQueueState, deleteQueueEntry } from "../jobs/subscriptions.ts";
 import { listUnmatched, syncLibrary, syncSingle } from "../jobs/sync.ts";
 import { removeLink } from "../abs/matcher.ts";
 import { logger } from "../log.ts";
@@ -119,6 +119,13 @@ export function createApp(ctx: AppContext): Hono {
     if (!state) return c.json({ error: `unknown action ${action}` }, 400);
     setQueueState(ctx, sourceId, state);
     return c.json({ ok: true, state });
+  });
+
+  app.delete("/api/queue/:sourceId", async (c) => {
+    const sourceId = Number.parseInt(c.req.param("sourceId"), 10);
+    if (!Number.isFinite(sourceId)) return c.json({ error: "bad source id" }, 400);
+    const result = await deleteQueueEntry(ctx, sourceId);
+    return c.json(result);
   });
 
   /**
