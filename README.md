@@ -347,8 +347,11 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 запит до базового домену джерела (`source.baseUrl`, зазвичай `https://4read.org`):
 
 ```
-GET {source.baseUrl}/m33u2/{slug}.m3u
+GET {source.baseUrl}/m33u2/{id}-{slug}.m3u
 ```
+
+де `{id}-{slug}` — ім’я статті без `.html`
+(`5546-garri-garrison-stalevyj-schur-2025-mp3.html` → `…/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u`).
 
 Очікується M3U зі списком mp3 (у потрібному порядку). Запити до плейлиста й треків
 йдуть через спільний Fetcher (прямий запит → FlareSolverr/Chrome при challenge), як і

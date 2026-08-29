@@ -126,7 +126,7 @@ export const configSchema = z.object({
   audio: z
     .object({
       /**
-       * Timeouts and size floor for `{source.baseUrl}/m33u2/{slug}.m3u` track downloads
+       * Timeouts and size floor for `{source.baseUrl}/m33u2/{id}-{slug}.m3u` track downloads
        * when Accept prepares a book / during library sync.
        */
       playlistTimeoutMs: z.number().int().min(1000).default(30_000),

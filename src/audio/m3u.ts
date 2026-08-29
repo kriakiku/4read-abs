@@ -4,11 +4,15 @@ import type { Config } from "../config.ts";
 import type { BookWithPeople } from "../catalog/store.ts";
 import type { Fetcher } from "../fetch/fetcher.ts";
 import { isMediaFile } from "../abs/stage.ts";
+import { parseBookUrl } from "../source/urls.ts";
 import { logger } from "../log.ts";
 
 const log = logger("audio");
 
 const PLAYLIST_MARKER = ".4read-audio-playlist";
+
+/** Playlist path segment: `{id}-{slug}` matching the article basename without `.html`. */
+const PLAYLIST_KEY_RE = /^\d+-[a-zA-Z0-9][\w.-]{0,180}$/;
 
 export interface PlaylistTrack {
   url: string;
@@ -23,14 +27,71 @@ export interface AudioFetchResult {
   files: string[];
 }
 
-export function playlistUrlFor(book: { slug: string }, config: Config): string | null {
-  if (!book.slug) return null;
+/**
+ * 4read playlist id is the article path without `.html`:
+ * `https://4read.org/5546-garri-garrison-….html` → `5546-garri-garrison-…`
+ * (not the slug alone). Prefer the book URL; fall back to `source_id` + slug.
+ */
+export function playlistKeyFor(book: {
+  source_id?: number;
+  slug: string;
+  url?: string | null;
+}): string | null {
+  const fromUrl = book.url ? parseBookUrl(book.url) : null;
+  const candidates: string[] = [];
+  if (fromUrl?.slug) candidates.push(`${fromUrl.sourceId}-${fromUrl.slug}`);
+  if (book.source_id && book.slug) candidates.push(`${book.source_id}-${book.slug}`);
+  // Already a full key in slug field (legacy / manual).
+  if (book.slug && /^\d+-/.test(book.slug)) candidates.push(book.slug);
+
+  for (const candidate of candidates) {
+    let decoded = candidate;
+    try {
+      decoded = decodeURIComponent(candidate);
+    } catch {
+      // keep raw
+    }
+    if (/[<>]/.test(decoded) || /<html/i.test(decoded)) continue;
+    if (PLAYLIST_KEY_RE.test(candidate)) return candidate;
+    if (PLAYLIST_KEY_RE.test(decoded)) return decoded;
+  }
+  return null;
+}
+
+/** @deprecated Use playlistKeyFor */
+export function playlistSlugFor(book: {
+  source_id?: number;
+  slug: string;
+  url?: string | null;
+}): string | null {
+  return playlistKeyFor(book);
+}
+
+export function playlistUrlFor(
+  book: { source_id?: number; slug: string; url?: string | null },
+  config: Config,
+): string | null {
+  const key = playlistKeyFor(book);
+  if (!key) return null;
   const base = config.source.baseUrl.replace(/\/+$/, "");
-  return `${base}/m33u2/${encodeURIComponent(book.slug)}.m3u`;
+  return `${base}/m33u2/${encodeURIComponent(key)}.m3u`;
+}
+
+/** True when a playlist GET clearly returned a web page instead of M3U. */
+export function looksLikeHtmlDocument(raw: string): boolean {
+  const head = raw.trim().slice(0, 256).toLowerCase();
+  return (
+    head.startsWith("<!doctype") ||
+    head.startsWith("<html") ||
+    head.includes("<head") ||
+    head.includes("just a moment") ||
+    head.includes("_cf_chl")
+  );
 }
 
 /**
  * Parse an M3U / M3U8 body into ordered track URLs. Supports `#EXTINF` titles and bare URL lists.
+ * Rejects HTML scraps — Cloudflare challenge pages must not become relative "track" URLs.
  */
 export function parseM3u(body: string, baseUrl?: string): PlaylistTrack[] {
   const tracks: PlaylistTrack[] = [];
@@ -46,6 +107,9 @@ export function parseM3u(body: string, baseUrl?: string): PlaylistTrack[] {
       continue;
     }
     if (line.startsWith("#")) continue;
+    // HTML tags / challenge pages must never resolve against the playlist base URL.
+    if (/[<>]/.test(line) || /\s/.test(line)) continue;
+    if (!isPlausibleTrackRef(line)) continue;
 
     let url = line;
     if (baseUrl && !/^https?:\/\//i.test(url)) {
@@ -55,12 +119,30 @@ export function parseM3u(body: string, baseUrl?: string): PlaylistTrack[] {
         continue;
       }
     }
-    if (!/^https?:\/\//i.test(url)) continue;
+    if (!isPlausibleTrackUrl(url)) continue;
     tracks.push({ url, title: pendingTitle });
     pendingTitle = null;
   }
 
   return tracks;
+}
+
+function isPlausibleTrackRef(line: string): boolean {
+  if (/^https?:\/\//i.test(line)) return true;
+  // Relative media: `files/1.mp3`, `a.mp3`, `../audio/b.m4b`
+  if (!/^[\w./%-]+$/i.test(line)) return false;
+  return line.includes("/") || /\.(mp3|m4a|m4b|flac|ogg|opus)(\?.*)?$/i.test(line);
+}
+
+function isPlausibleTrackUrl(url: string): boolean {
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    const path = decodeURIComponent(new URL(url).pathname);
+    if (/[<>]/.test(path) || /<html/i.test(path)) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function originalNameFromUrl(url: string): { stem: string; extension: string } {
@@ -97,16 +179,24 @@ function safeStem(value: string): string {
     .slice(0, 80);
 }
 
-/** FlareSolverr returns page HTML for text GETs; peel a bare M3U out of a wrapper if needed. */
+/**
+ * FlareSolverr returns page HTML for text GETs; peel a bare M3U out of a wrapper if needed.
+ * Returns an empty string when the body is an HTML document with no embedded playlist —
+ * otherwise `<html…>` would be parsed as a relative track path under `/m33u2/`.
+ */
 export function extractPlaylistBody(raw: string): string {
   const trimmed = raw.trim();
+  if (!trimmed) return "";
   if (trimmed.startsWith("#EXTM3U")) return trimmed;
   // Bare URL-only playlist (no EXTINF header) — only when the whole body is the list.
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed) && !/[<>]/.test(trimmed)) return trimmed;
+
   const pre = trimmed.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
   if (pre?.[1]) return pre[1].trim();
   const start = trimmed.indexOf("#EXTM3U");
   if (start >= 0) return trimmed.slice(start);
+
+  if (looksLikeHtmlDocument(trimmed)) return "";
   return trimmed;
 }
 
@@ -165,7 +255,7 @@ export async function clearBookFolder(dir: string): Promise<{ audio: number; wip
 }
 
 /**
- * Fetch `{source.baseUrl}/m33u2/{slug}.m3u` and download each listed media file into `dir`
+ * Fetch `{source.baseUrl}/m33u2/{id}-{slug}.m3u` and download each listed media file into `dir`
  * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
  * Uses the shared Fetcher (direct → FlareSolverr Chrome) so challenged hosts still work.
  * Soft-skips when the playlist is empty or unreachable.
@@ -178,11 +268,11 @@ export async function ensureAudioFromPlaylist(
 ): Promise<AudioFetchResult | null> {
   const playlistUrl = playlistUrlFor(book, config);
   if (!playlistUrl) {
-    log.warn(`audio skipped for ${book.source_id}: book has no slug`);
+    log.warn(`audio skipped for ${book.source_id}: cannot build playlist key from url/slug`);
     return null;
   }
 
-  log.info(`audio: fetching playlist for ${book.source_id} (${book.slug}) → ${playlistUrl}`);
+  log.info(`audio: fetching playlist for ${book.source_id} → ${playlistUrl}`);
 
   const markerPath = join(dir, PLAYLIST_MARKER);
   try {
@@ -210,6 +300,13 @@ export async function ensureAudioFromPlaylist(
     body = extractPlaylistBody(text.body);
   } catch (error) {
     log.warn(`playlist fetch failed for ${book.slug}: ${String(error)}`);
+    return null;
+  }
+
+  if (!body) {
+    log.warn(
+      `playlist for ${book.slug} returned HTML/empty instead of M3U (${playlistUrl}) — Cloudflare or wrong URL?`,
+    );
     return null;
   }
 

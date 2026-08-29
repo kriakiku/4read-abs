@@ -36,7 +36,7 @@ afterEach(async () => {
 function book(partial: Partial<BookWithPeople> = {}): BookWithPeople {
   return {
     source_id: 6840,
-    url: "https://4read.org/6840-x.html",
+    url: "https://4read.org/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.html",
     slug: "mskingbean89-vsi-molodi-chuvaki-pershij-rik",
     title: "Всі молоді чуваки: Перший рік",
     subtitle: null,
@@ -113,18 +113,28 @@ https://cdn.example/c.mp3
     expect(tracks[0]!.url).toBe("http://backend.local/m33u2/files/1.mp3");
   });
 
-  test("builds the playlist URL from source.baseUrl and slug", () => {
+  test("builds the playlist URL as /m33u2/{id}-{slug}.m3u", () => {
     const config = configSchema.parse({
       source: { baseUrl: "https://4read.org/" },
     });
     expect(playlistUrlFor(book(), config)).toBe(
-      "https://4read.org/m33u2/mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u",
+      "https://4read.org/m33u2/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u",
     );
+    expect(
+      playlistUrlFor(
+        {
+          source_id: 5546,
+          slug: "garri-garrison-stalevyj-schur-2025-mp3",
+          url: "https://4read.org/5546-garri-garrison-stalevyj-schur-2025-mp3.html",
+        },
+        config,
+      ),
+    ).toBe("https://4read.org/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u");
   });
 
-  test("returns null when the book has no slug", () => {
+  test("returns null when the book has no slug or id", () => {
     const config = configSchema.parse({});
-    expect(playlistUrlFor(book({ slug: "" }), config)).toBeNull();
+    expect(playlistUrlFor(book({ slug: "", url: null, source_id: 0 }), config)).toBeNull();
   });
 
   test("trackFileName uses 4-digit index and path basename, strips query", () => {
@@ -147,6 +157,30 @@ https://cdn.example/c.mp3
     const m3u = "#EXTM3U\nhttps://x/a.mp3\n";
     expect(extractPlaylistBody(m3u)).toBe(m3u.trim());
     expect(extractPlaylistBody(`<html><body><pre>${m3u}</pre></body></html>`)).toBe(m3u.trim());
+  });
+
+  test("Cloudflare HTML is not treated as an M3U track under /m33u2/", () => {
+    const html = `<html dir="ltr" lang="en"><head><title>Just a moment...</title></head><body>cf</body></html>`;
+    expect(extractPlaylistBody(html)).toBe("");
+    expect(parseM3u(html, "https://4read.org/m33u2/6840-good-slug.m3u")).toEqual([]);
+    expect(parseM3u(extractPlaylistBody(html), "https://4read.org/m33u2/6840-good-slug.m3u")).toEqual([]);
+  });
+
+  test("playlist key rejects HTML junk and uses id-slug from the book URL", () => {
+    const config = configSchema.parse({ source: { baseUrl: "https://4read.org" } });
+    expect(
+      playlistUrlFor(
+        {
+          source_id: 6840,
+          slug: '<html dir="ltr" lang="en"><head>',
+          url: "https://4read.org/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.html",
+        },
+        config,
+      ),
+    ).toBe("https://4read.org/m33u2/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u");
+    expect(
+      playlistUrlFor({ source_id: 1, slug: "<html>nope</html>", url: null }, config),
+    ).toBeNull();
   });
 });
 

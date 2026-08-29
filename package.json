@@ -1,6 +1,6 @@
 {
   "name": "4read-abs",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Scraper for 4read.org audiobook metadata with Audiobookshelf sidecar sync and subscriptions",
   "private": true,
   "type": "module",
