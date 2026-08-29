@@ -70,7 +70,7 @@ export class Scheduler {
         log.warn(`sitemap sync failed: ${String(error)}`);
         return null;
       });
-      await ctx.runJob("subscriptions", () => refreshQueue(ctx)).catch((error) => {
+      await ctx.runJob("subscriptions", () => refreshQueue(ctx, { crawlFacets: true })).catch((error) => {
         log.warn(`subscription refresh failed: ${String(error)}`);
         return null;
       });

@@ -8,6 +8,7 @@ import { parseBookSitemap, parseSitemapIndex, sitemapIndexUrl } from "../source/
 import { bookUrl, xfsearchUrl } from "../source/urls.ts";
 import {
   booksNeedingDetail,
+  booksNeedingDetailForSubscriptions,
   markBookState,
   recordBookDetail,
   recordListingCard,
@@ -169,10 +170,16 @@ export interface BackfillResult {
 /**
  * Slowly work through books whose detail page has never been read. Stops as soon as the
  * source starts pushing back so a backfill never turns into a hammering loop.
+ *
+ * By default only subscription matches and queued books are fetched (see
+ * `schedule.backfillAll`). The sitemap still registers the whole catalogue; it just does
+ * not spend FlareSolverr budget on unrelated detail pages.
  */
 export async function backfillDetails(ctx: AppContext, limit: number): Promise<BackfillResult> {
   const result: BackfillResult = { attempted: 0, ok: 0, skipped: 0, failed: 0, stoppedEarly: false };
-  const pending = booksNeedingDetail(ctx.db, limit);
+  const pending = ctx.config.schedule.backfillAll
+    ? booksNeedingDetail(ctx.db, limit)
+    : booksNeedingDetailForSubscriptions(ctx.db, ctx.config.subscriptions, limit);
 
   for (const book of pending) {
     if (ctx.fetcher.limiter.inCooldown() && !ctx.fetcher.flareConfigured) {
@@ -208,20 +215,23 @@ export async function backfillDetails(ctx: AppContext, limit: number): Promise<B
  * Walk a facet listing (a series, narrator or author page) and register every book on it.
  * One request covers up to ~24 books, which is far cheaper than visiting each detail page,
  * and it is how a subscription discovers volumes the sitemap has not surfaced yet.
+ * Books are linked to the facet immediately so the queue can fill without a detail crawl.
  */
 export async function crawlFacet(
   ctx: AppContext,
   kind: "avtor" | "chitaet" | "cikl",
   key: string,
   maxPages = 5,
+  displayName?: string,
 ): Promise<{ pages: number; cards: number }> {
   const base = ctx.config.source.baseUrl;
+  const facetKey = key.trim().toLowerCase();
   let pages = 0;
   let cards = 0;
   let lastPage = 1;
 
   for (let page = 1; page <= Math.min(maxPages, lastPage); page += 1) {
-    const url = xfsearchUrl(kind, key, page, base);
+    const url = xfsearchUrl(kind, facetKey, page, base);
     const response = await ctx.fetcher.getText(url);
     const listing = parseListingPage(response.body, base);
     lastPage = Math.max(lastPage, listing.lastPage);
@@ -229,7 +239,11 @@ export async function crawlFacet(
 
     const apply = ctx.db.transaction(() => {
       for (const card of listing.cards) {
-        recordListingCard(ctx.db, card);
+        recordListingCard(ctx.db, card, {
+          kind,
+          key: facetKey,
+          name: displayName?.trim() || facetKey,
+        });
         cards += 1;
       }
     });

@@ -59,7 +59,7 @@ export async function refreshQueue(ctx: AppContext, options: { crawlFacets?: boo
         subscription.type === "author" ? "avtor" : subscription.type === "narrator" ? "chitaet" : subscription.type === "series" ? "cikl" : null;
       if (!kind) continue;
       try {
-        await crawlFacet(ctx, kind, subscription.value.trim().toLowerCase(), 2);
+        await crawlFacet(ctx, kind, subscription.value.trim().toLowerCase(), 2, subscription.value);
       } catch (error) {
         log.warn(`facet crawl failed for ${subscription.type}:${subscription.value}: ${String(error)}`);
       }

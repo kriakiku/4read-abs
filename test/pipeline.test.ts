@@ -39,11 +39,12 @@ async function buildFake(options: { absItems?: unknown[] } = {}): Promise<Fake> 
   const itemPath = join(library, "Yudkovski", "HPMOR 2");
   const scanned: string[] = [];
 
-  const [book6840, book3130, authors, readers] = await Promise.all([
+  const [book6840, book3130, authors, readers, seriesListing] = await Promise.all([
     fixture("book-6840-vsi-molodi-chuvaki.html"),
     fixture("book-3130-hpmor-2.html"),
     fixture("index-authors.html"),
     fixture("index-readers.html"),
+    fixture("listing-series.html"),
   ]);
 
   // Filled in once the port is known; the handler only reads it per request.
@@ -82,6 +83,7 @@ async function buildFake(options: { absItems?: unknown[] } = {}): Promise<Fake> 
       if (pathname.startsWith("/3130-")) return send(book3130);
       // A blog post: same URL shape, but no book markup.
       if (pathname.startsWith("/8130-")) return send("<html><body><h1>Дикторам - наголоси!</h1></body></html>");
+      if (pathname.includes("/xfsearch/cikl/")) return send(seriesListing);
       if (pathname.startsWith("/uploads/")) {
         // Fixture covers end in .jpg. Serve a real JPEG larger than the cache's 64-byte floor.
         const jpeg = Uint8Array.from(
@@ -171,6 +173,7 @@ subscriptions:
 schedule:
   incrementalMinutes: 0
   backfillEnabled: false
+  backfillAll: true
   syncMinutes: 0
 `,
   );
@@ -274,6 +277,27 @@ describe("catalogue pipeline", () => {
     expect(hpmor.reason).toContain("narrator:Характерник");
     expect(hpmor.book?.title).toContain("Книга 2");
     expect(hpmor.coverUrl).toMatch(/^\/api\/covers\/3130/);
+  });
+
+  test("facet crawl links series without a detail fetch, and scoped backfill stays on-topic", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    // Catalogue-wide backfill off: unrelated sitemap entries must not be fetched.
+    fake.ctx.config.schedule.backfillAll = false;
+
+    const empty = await backfillDetails(fake.ctx, 10);
+    expect(empty.attempted).toBe(0);
+
+    const queued = await refreshQueue(fake.ctx, { crawlFacets: true });
+    expect(queued.matched).toBeGreaterThan(0);
+    expect(booksForSubscription(fake.ctx.db, "series", "all the young dudes").length).toBeGreaterThan(0);
+
+    const scoped = await backfillDetails(fake.ctx, 1);
+    expect(scoped.attempted).toBe(1);
+    expect(scoped.ok).toBe(1);
+    // Only the series volume overlapping the sitemap should be detailed, not the blog post.
+    expect(getBook(fake.ctx.db, 6840)?.detail_state).toBe("ok");
+    expect(getBook(fake.ctx.db, 8130)?.detail_state).toBe("pending");
   });
 
   test("accept and ignore move entries between states", async () => {

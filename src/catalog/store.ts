@@ -108,11 +108,21 @@ export function recordSitemapEntry(db: Db, entry: SitemapBookEntry): "new" | "st
   return "unchanged";
 }
 
+/** Which xfsearch facet a listing card was discovered on, if any. */
+export interface ListingFacet {
+  kind: "avtor" | "chitaet" | "cikl";
+  key: string;
+  /** Display name for the entity table; defaults to the key. */
+  name?: string;
+}
+
 /**
  * Cheap partial record from a listing card. Never downgrades a fully fetched row: only
  * fields the detail parser also produces are filled, and only when still empty.
+ * When `facet` is set (author / narrator / series listing), the book is linked to that
+ * entity immediately so subscriptions can match before a detail page is fetched.
  */
-export function recordListingCard(db: Db, card: ListingCard): void {
+export function recordListingCard(db: Db, card: ListingCard, facet?: ListingFacet): void {
   const existing = db
     .query<{ source_id: number; detail_state: string }, [number]>(
       "select source_id, detail_state from books where source_id = ?",
@@ -134,29 +144,51 @@ export function recordListingCard(db: Db, card: ListingCard): void {
       card.votes,
       nowIso(),
     );
-    return;
+  } else {
+    db.query(
+      `update books set
+         url = ?,
+         slug = ?,
+         title = case when title = '' then ? else title end,
+         cover_url = coalesce(cover_url, ?),
+         duration_sec = coalesce(duration_sec, ?),
+         rating = coalesce(?, rating),
+         votes = coalesce(?, votes)
+       where source_id = ?`,
+    ).run(
+      card.url,
+      card.slug,
+      card.title,
+      card.coverUrl,
+      card.durationSec,
+      card.rating,
+      card.votes,
+      card.sourceId,
+    );
   }
 
+  if (facet) attachListingFacet(db, card.sourceId, facet);
+}
+
+function attachListingFacet(db: Db, sourceId: number, facet: ListingFacet): void {
+  const name = (facet.name ?? facet.key).trim() || facet.key;
+  if (facet.kind === "avtor") {
+    upsertAuthor(db, { key: facet.key, name });
+    db.query("insert or ignore into book_authors (source_id, author_key) values (?, ?)").run(sourceId, facet.key);
+    return;
+  }
+  if (facet.kind === "chitaet") {
+    upsertNarrator(db, { key: facet.key, name });
+    db.query("insert or ignore into book_narrators (source_id, narrator_key) values (?, ?)").run(sourceId, facet.key);
+    return;
+  }
+  upsertSeries(db, { key: facet.key, name });
   db.query(
     `update books set
-       url = ?,
-       slug = ?,
-       title = case when title = '' then ? else title end,
-       cover_url = coalesce(cover_url, ?),
-       duration_sec = coalesce(duration_sec, ?),
-       rating = coalesce(?, rating),
-       votes = coalesce(?, votes)
+       series_key = coalesce(series_key, ?),
+       series_name = coalesce(series_name, ?)
      where source_id = ?`,
-  ).run(
-    card.url,
-    card.slug,
-    card.title,
-    card.coverUrl,
-    card.durationSec,
-    card.rating,
-    card.votes,
-    card.sourceId,
-  );
+  ).run(facet.key, name, sourceId);
 }
 
 export function recordBookDetail(db: Db, book: ParsedBook, options: { lastmod?: string | null } = {}): void {
@@ -306,6 +338,45 @@ export function booksNeedingDetail(db: Db, limit: number): BookRow[] {
        limit ?`,
     )
     .all(limit);
+}
+
+/**
+ * Pending detail pages for books that already match a subscription or sit in the news
+ * queue. Used when the catalogue-wide backfill is off so we do not spend FlareSolverr
+ * budget on unrelated sitemap entries.
+ */
+export function booksNeedingDetailForSubscriptions(
+  db: Db,
+  subscriptions: Array<{ type: string; value: string; enabled?: boolean }>,
+  limit: number,
+): BookRow[] {
+  const ids = new Set<number>();
+  for (const subscription of subscriptions) {
+    if (subscription.enabled === false) continue;
+    for (const book of booksForSubscription(db, subscription.type, subscription.value)) {
+      if (book.detail_state === "pending") ids.add(book.source_id);
+    }
+  }
+  for (const row of db
+    .query<{ source_id: number }, []>(
+      `select q.source_id from queue q
+       join books b on b.source_id = q.source_id
+       where b.detail_state = 'pending'`,
+    )
+    .all()) {
+    ids.add(row.source_id);
+  }
+  if (ids.size === 0) return [];
+
+  const placeholders = [...ids].map(() => "?").join(",");
+  return db
+    .query<BookRow, number[]>(
+      `select * from books
+       where source_id in (${placeholders}) and detail_state = 'pending'
+       order by (fetched_at is not null), coalesce(lastmod, '') desc, source_id desc
+       limit ?`,
+    )
+    .all(...ids, limit);
 }
 
 const SUBSCRIPTION_QUERIES: Record<string, string> = {

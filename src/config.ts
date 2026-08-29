@@ -127,8 +127,13 @@ export const configSchema = z.object({
     .object({
       /** Sitemap poll interval. Zero disables the timer. */
       incrementalMinutes: z.number().int().min(0).default(60),
-      /** Slowly fetch detail pages for books discovered but never fetched. */
+      /** Slowly fetch detail pages. Off for unrelated sitemap entries unless backfillAll. */
       backfillEnabled: z.boolean().default(true),
+      /**
+       * When false (default), only fetch details for books that match a subscription or are
+       * already in the news queue. When true, walk the whole pending catalogue by lastmod.
+       */
+      backfillAll: z.boolean().default(false),
       backfillBatch: z.number().int().min(0).default(25),
       syncMinutes: z.number().int().min(0).default(180),
     })
