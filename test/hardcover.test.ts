@@ -75,7 +75,7 @@ describe("cover preference", () => {
 });
 
 describe("Hardcover enrichment", () => {
-  test("matches by English series position and skips compilation book ids", async () => {
+  test("maps ATYD years onto Hardcover year-one and volume-two (Years 5-7)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "4read-hc-"));
     try {
       const origin = Bun.serve({
@@ -119,12 +119,13 @@ describe("Hardcover enrichment", () => {
                       },
                     },
                     {
+                      // Hardcover volume# is 2, but the pack is Hogwarts years 5–7 — not year 2.
                       position: 2,
                       compilation: true,
                       book: {
                         id: 1002,
                         slug: "all-the-young-dudes-volume-two",
-                        title: "All the Young Dudes: Volume Two",
+                        title: "All The Young Dudes - Volume Two: Years 5 - 7",
                         release_year: 2018,
                         compilation: true,
                         image: { url: "https://cdn.hardcover.app/covers/v2.jpg" },
@@ -138,7 +139,6 @@ describe("Hardcover enrichment", () => {
             });
           }
 
-          // Book searches can return empty; series path should be enough.
           if (query.includes("query Search")) {
             return Response.json({ data: { search: { results: { hits: [] } } } });
           }
@@ -168,9 +168,10 @@ describe("Hardcover enrichment", () => {
       });
       expect(yearOne.matchKind).toBe("series-position");
       expect(yearOne.bookId).toBe("1001");
+      expect(yearOne.slug).toBe("all-the-young-dudes-year-one");
       expect(yearOne.coverUrl).toContain("y1.jpg");
-      expect(yearOne.seriesId).toBe("42");
 
+      // Year 2 must NOT attach Volume Two (that pack is years 5–7).
       const yearTwo = await client.enrich({
         title: "Всі молоді чуваки: Другий рік",
         authors: ["MsKingBean89"],
@@ -178,11 +179,22 @@ describe("Hardcover enrichment", () => {
         seriesSeq: "2",
         tags: ["All the Young Dudes"],
       });
-      // Packed Hardcover volume → cover only, no 1:1 book id (do not merge years 2–4).
+      expect(yearTwo.slug).not.toBe("all-the-young-dudes-volume-two");
       expect(yearTwo.matchKind).toBe("series-cover");
-      expect(yearTwo.bookId).toBeNull();
-      expect(yearTwo.coverUrl).toContain("v2.jpg");
-      expect(yearTwo.compilation).toBe(true);
+
+      // Years 5–7 share the Hardcover volume-two edition for cover/slug, but stay separate ABS items.
+      const yearFive = await client.enrich({
+        title: "Всі молоді чуваки: П'ятий рік",
+        authors: ["MsKingBean89"],
+        seriesName: "All the Young Dudes",
+        seriesSeq: "5",
+        tags: ["All the Young Dudes"],
+      });
+      expect(yearFive.matchKind).toBe("volume-pack");
+      expect(yearFive.slug).toBe("all-the-young-dudes-volume-two");
+      expect(yearFive.bookId).toBe("1002");
+      expect(yearFive.coverUrl).toContain("v2.jpg");
+      expect(yearFive.compilation).toBe(true);
 
       db.close();
     } finally {

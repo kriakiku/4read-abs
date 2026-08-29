@@ -28,6 +28,26 @@ const UK_ORDINALS: Array<[RegExp, number]> = [
   [/(?<![\p{L}\p{N}])десят(ий|а|е|ого)(?![\p{L}\p{N}])/iu, 10],
 ];
 
+const EN_YEAR_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+};
+
+function parseYearToken(token: string): number | null {
+  const lower = token.toLowerCase();
+  if (EN_YEAR_WORDS[lower]) return EN_YEAR_WORDS[lower]!;
+  const n = Number.parseInt(token, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /**
  * Guess a volume/year index from a Ukrainian or English title when series_seq is missing
  * ("Перший рік", "Year Two", "Volume 3").
@@ -40,20 +60,38 @@ export function inferVolumeHint(title: string): number | null {
     /\b(?:year|volume|vol\.?|book|part)\s*(?:#|№)?\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b/i,
   );
   if (!english) return null;
-  const token = english[1]!.toLowerCase();
-  const words: Record<string, number> = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10,
-  };
-  if (words[token]) return words[token]!;
-  const n = Number.parseInt(token, 10);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  return parseYearToken(english[1]!);
+}
+
+export interface YearRange {
+  from: number;
+  to: number;
+}
+
+/**
+ * Hardcover often packs several Hogwarts years into one edition title, e.g.
+ * "All The Young Dudes - Volume Two: Years 5 - 7".
+ */
+export function parseYearRange(title: string): YearRange | null {
+  const range = title.match(
+    /\byears?\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s*[-–—to]+\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b/i,
+  );
+  if (range) {
+    const from = parseYearToken(range[1]!);
+    const to = parseYearToken(range[2]!);
+    if (from && to && to >= from) return { from, to };
+  }
+
+  const single = title.match(
+    /\byear\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b/i,
+  );
+  if (single) {
+    const n = parseYearToken(single[1]!);
+    if (n) return { from: n, to: n };
+  }
+  return null;
+}
+
+export function yearRangeContains(range: YearRange, year: number): boolean {
+  return year >= range.from && year <= range.to;
 }
