@@ -356,7 +356,9 @@ DOWNLOAD_BASE=http://your-backend:8080
 GET {DOWNLOAD_BASE}/m33u2/{slug}.m3u
 ```
 
-Очікується M3U зі списком mp3 (у потрібному порядку). Файли зберігаються в staging / бібліотеку як `0001-origName.mp3`,
+Очікується M3U зі списком mp3 (у потрібному порядку). Запити до плейлиста й треків
+йдуть через спільний Fetcher (прямий запит → FlareSolverr/Chrome при challenge), як і
+сторінки джерела. Файли зберігаються в staging / бібліотеку як `0001-origName.mp3`,
 `0002-….mp3`, … (ім’я з pathname URL, query-параметри ігноруються). Повторний sync
 пропускає вже скачані треки (маркер `.4read-audio-playlist`).
 
