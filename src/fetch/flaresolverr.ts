@@ -44,11 +44,14 @@ export interface FlareResult {
   userAgent?: string;
 }
 
-export interface FlareImageResult {
+export interface FlareFileResult {
   bytes: Uint8Array;
   contentType: string;
   strategy: "download" | "screenshot";
 }
+
+/** @deprecated Use FlareFileResult */
+export type FlareImageResult = FlareFileResult;
 
 /**
  * Client for the FlareSolverr v1 API. FlareSolverr drives a real browser, so it can pass
@@ -141,12 +144,10 @@ export class FlareSolverrClient {
   }
 
   /**
-   * Fetch an image inside FlareSolverr's browser (same TLS fingerprint + cookies that already
-   * passed Cloudflare). Stock FlareSolverr cannot return raw bytes, so we prefer a patched
-   * `download: true` response and fall back to a PNG screenshot of the image URL.
+   * Fetch a file inside FlareSolverr's browser via patched `download: true` (base64 bytes).
+   * Works for images, audio, and other binaries that Chrome can download.
    */
-  async fetchImage(url: string): Promise<FlareImageResult | null> {
-    // Patched FlareSolverr builds (PR #1708 / forks) return base64 file bytes.
+  async fetchDownload(url: string): Promise<FlareFileResult | null> {
     try {
       const downloaded = await this.requestGet(url, { download: true });
       const file = normaliseDownload(downloaded.solution?.download);
@@ -163,6 +164,16 @@ export class FlareSolverrClient {
     } catch (error) {
       log.debug(`FlareSolverr download mode unavailable: ${String(error)}`);
     }
+    return null;
+  }
+
+  /**
+   * Fetch an image inside FlareSolverr's browser (same TLS fingerprint + cookies that already
+   * passed Cloudflare). Prefer patched download mode; fall back to a PNG screenshot.
+   */
+  async fetchImage(url: string): Promise<FlareFileResult | null> {
+    const downloaded = await this.fetchDownload(url);
+    if (downloaded) return downloaded;
 
     // Stock FlareSolverr: open the image URL in Chrome and screenshot the viewer.
     const shot = await this.requestGet(url, { returnScreenshot: true });

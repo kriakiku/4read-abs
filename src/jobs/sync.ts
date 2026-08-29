@@ -41,7 +41,7 @@ async function ensureAudio(ctx: AppContext, book: BookWithPeople): Promise<numbe
   if (!audioDownloadEnabled(ctx.config)) return 0;
   try {
     const dir = stagingDirFor(book, ctx.config);
-    const result = await ensureAudioFromPlaylist(book, dir, ctx.config);
+    const result = await ensureAudioFromPlaylist(book, dir, ctx.config, ctx.fetcher);
     return result?.files.length ?? 0;
   } catch (error) {
     log.warn(`audio fetch failed for ${book.source_id}: ${String(error)}`);

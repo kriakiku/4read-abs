@@ -3,15 +3,33 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configSchema } from "../src/config.ts";
-import { ensureAudioFromPlaylist, parseM3u, playlistUrlFor } from "../src/audio/m3u.ts";
+import { openDb } from "../src/db.ts";
+import {
+  ensureAudioFromPlaylist,
+  extractPlaylistBody,
+  parseM3u,
+  playlistUrlFor,
+  trackFileName,
+} from "../src/audio/m3u.ts";
 import type { BookWithPeople } from "../src/catalog/store.ts";
+import { Fetcher } from "../src/fetch/fetcher.ts";
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
+const fetchers: Fetcher[] = [];
+const tempDirs: string[] = [];
 
 afterEach(async () => {
+  while (fetchers.length) {
+    const fetcher = fetchers.pop();
+    if (fetcher) await fetcher.close();
+  }
   while (servers.length) {
     const server = servers.pop();
     if (server) await server.stop(true);
+  }
+  while (tempDirs.length) {
+    const dir = tempDirs.pop();
+    if (dir) await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -54,6 +72,24 @@ function book(partial: Partial<BookWithPeople> = {}): BookWithPeople {
   };
 }
 
+async function makeFetcher(overrides: Record<string, unknown> = {}): Promise<{
+  fetcher: Fetcher;
+  dir: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), "4read-audio-db-"));
+  tempDirs.push(dir);
+  const db = openDb(dir);
+  const config = configSchema.parse({
+    paths: { data: dir },
+    source: { minIntervalMs: 0, challengeCooldownMs: 50 },
+    flaresolverr: { url: "", mode: "never" },
+    ...overrides,
+  });
+  const fetcher = new Fetcher(db, config);
+  fetchers.push(fetcher);
+  return { fetcher, dir };
+}
+
 describe("M3U parsing", () => {
   test("reads EXTINF titles and bare URLs in order", () => {
     const tracks = parseM3u(`#EXTM3U
@@ -83,51 +119,150 @@ https://cdn.example/c.mp3
       "http://audio.local/m33u2/mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u",
     );
   });
+
+  test("trackFileName uses 4-digit index and path basename, strips query", () => {
+    expect(
+      trackFileName(0, {
+        url: "https://cdn.example/path/Chapter%20One.mp3?sig=abc&exp=1",
+        title: "Ignored Title",
+      }),
+    ).toBe("0001-Chapter One.mp3");
+    expect(trackFileName(9, { url: "https://cdn.example/z.ogg#frag", title: null })).toBe(
+      "0010-z.ogg",
+    );
+    expect(trackFileName(0, { url: "https://cdn.example/noext?x=1", title: "Fallback" })).toBe(
+      "0001-noext.mp3",
+    );
+    expect(trackFileName(0, { url: "https://cdn.example/", title: null })).toBe("0001-track-0001.mp3");
+  });
+
+  test("extractPlaylistBody peels FlareSolverr HTML wrappers", () => {
+    const m3u = "#EXTM3U\nhttps://x/a.mp3\n";
+    expect(extractPlaylistBody(m3u)).toBe(m3u.trim());
+    expect(extractPlaylistBody(`<html><body><pre>${m3u}</pre></body></html>`)).toBe(m3u.trim());
+  });
 });
 
 describe("playlist audio fetch", () => {
-  test("downloads ordered mp3s into the staging folder", async () => {
+  test("downloads ordered mp3s into the staging folder via Fetcher", async () => {
     const dir = await mkdtemp(join(tmpdir(), "4read-audio-"));
+    tempDirs.push(dir);
     const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => i % 256);
 
-    try {
-      const origin = Bun.serve({
-        port: 0,
-        fetch(request): Response {
-          const { pathname } = new URL(request.url);
-          if (pathname.endsWith(".m3u")) {
-            const base = `http://127.0.0.1:${origin.port}`;
-            return new Response(
-              `#EXTM3U\n#EXTINF:-1,Part A\n${base}/a.mp3\n#EXTINF:-1,Part B\n${base}/b.mp3\n`,
-              { headers: { "content-type": "audio/x-mpegurl" } },
-            );
-          }
-          if (pathname.endsWith(".mp3")) {
-            return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
-          }
-          return new Response("no", { status: 404 });
-        },
-      });
-      servers.push(origin);
+    const origin = Bun.serve({
+      port: 0,
+      fetch(request): Response {
+        const { pathname } = new URL(request.url);
+        if (pathname.endsWith(".m3u")) {
+          const base = `http://127.0.0.1:${origin.port}`;
+          return new Response(
+            `#EXTM3U\n#EXTINF:-1,Part A\n${base}/folder/a.mp3?token=1\n#EXTINF:-1,Part B\n${base}/b.mp3?sig=xyz\n`,
+            { headers: { "content-type": "audio/x-mpegurl" } },
+          );
+        }
+        if (pathname.endsWith(".mp3")) {
+          return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
+        }
+        return new Response("no", { status: 404 });
+      },
+    });
+    servers.push(origin);
 
-      const config = configSchema.parse({
-        audio: { downloadBase: `http://127.0.0.1:${origin.port}` },
-      });
-      const target = join(dir, "book");
-      const result = await ensureAudioFromPlaylist(book(), target, config);
+    const { fetcher } = await makeFetcher();
+    const config = configSchema.parse({
+      audio: { downloadBase: `http://127.0.0.1:${origin.port}` },
+    });
+    const target = join(dir, "book");
+    const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
 
-      expect(result?.tracks).toBe(2);
-      expect(result?.downloaded).toBe(2);
-      const names = (await readdir(target)).filter((n) => n.endsWith(".mp3")).sort();
-      expect(names).toEqual(["01 - Part A.mp3", "02 - Part B.mp3"]);
-      expect(await readFile(join(target, ".4read-audio-playlist"), "utf8")).toContain("/m33u2/");
+    expect(result?.tracks).toBe(2);
+    expect(result?.downloaded).toBe(2);
+    const names = (await readdir(target)).filter((n) => n.endsWith(".mp3")).sort();
+    expect(names).toEqual(["0001-a.mp3", "0002-b.mp3"]);
+    expect(await readFile(join(target, ".4read-audio-playlist"), "utf8")).toContain("/m33u2/");
 
-      // Second run is a no-op.
-      const again = await ensureAudioFromPlaylist(book(), target, config);
-      expect(again?.downloaded).toBe(0);
-      expect(again?.skipped).toBe(2);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    const again = await ensureAudioFromPlaylist(book(), target, config, fetcher);
+    expect(again?.downloaded).toBe(0);
+    expect(again?.skipped).toBe(2);
+  });
+
+  test("falls back to FlareSolverr Chrome download for challenged media", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-flare-"));
+    tempDirs.push(dir);
+    const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => (i + 7) % 256);
+    const flareRequests: Array<Record<string, unknown>> = [];
+
+    const origin = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response("<html>Just a moment...<script>window._cf_chl_opt=1</script></html>", {
+          status: 403,
+          headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
+        });
+      },
+    });
+    servers.push(origin);
+
+    const flare = Bun.serve({
+      port: 0,
+      async fetch(request): Promise<Response> {
+        const payload = (await request.json()) as Record<string, unknown>;
+        flareRequests.push(payload);
+        if (payload.cmd === "sessions.create") {
+          return Response.json({ status: "ok", session: "s1" });
+        }
+        const target = String(payload.url ?? "");
+        if (payload.download && target.includes(".mp3")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              download: {
+                filename: "a.mp3",
+                mime: "audio/mpeg",
+                data: Buffer.from(mp3).toString("base64"),
+              },
+            },
+          });
+        }
+        if (target.includes(".m3u")) {
+          const base = `http://127.0.0.1:${origin.port}`;
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+            },
+          });
+        }
+        return Response.json({ status: "error", message: "unexpected" });
+      },
+    });
+    servers.push(flare);
+
+    const dbDir = await mkdtemp(join(tmpdir(), "4read-audio-flare-db-"));
+    tempDirs.push(dbDir);
+    const db = openDb(dbDir);
+    const config = configSchema.parse({
+      paths: { data: dbDir },
+      source: { minIntervalMs: 0, challengeCooldownMs: 50, requestTimeoutMs: 5_000 },
+      flaresolverr: { url: `http://127.0.0.1:${flare.port}/`, mode: "always", maxTimeoutMs: 5_000 },
+      audio: { downloadBase: `http://127.0.0.1:${origin.port}` },
+    });
+    const fetcher = new Fetcher(db, config);
+    fetchers.push(fetcher);
+
+    const target = join(dir, "book");
+    const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
+    expect(result?.downloaded).toBe(1);
+    expect(await readdir(target)).toContain("0001-a.mp3");
+    expect(flareRequests.some((r) => r.download === true)).toBe(true);
+    expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);
   });
 });

@@ -223,22 +223,32 @@ export class Fetcher {
   }
 
   /**
-   * Fetch binary content such as a cover. Bun's TLS fingerprint cannot reuse FlareSolverr
-   * clearance cookies, so a challenged direct download falls back to fetching inside
-   * FlareSolverr's browser (download API or a PNG screenshot of the image URL).
+   * Fetch binary content (covers, audio tracks, …). Bun's TLS fingerprint cannot reuse
+   * FlareSolverr clearance cookies, so a challenged direct download falls back to fetching
+   * inside FlareSolverr's Chrome (download API; image URLs may also use a screenshot).
    */
-  async getBinary(url: string, options: { referer?: string } = {}): Promise<BinaryResult> {
+  async getBinary(
+    url: string,
+    options: { referer?: string; purpose?: "image" | "media" } = {},
+  ): Promise<BinaryResult> {
     if (this.limiter.inCooldown() && !this.flareConfigured) {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
+
+    const purpose = options.purpose ?? "image";
 
     const attemptDirect = async (): Promise<BinaryResult | "challenged"> => {
       await this.limiter.acquire();
 
       const started = Bun.nanoseconds();
       const headers = this.browserHeaders(options.referer);
-      headers.accept = "image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8";
-      headers["sec-fetch-dest"] = "image";
+      if (purpose === "media") {
+        headers.accept = "audio/mpeg,audio/*,application/octet-stream,*/*;q=0.8";
+        headers["sec-fetch-dest"] = "audio";
+      } else {
+        headers.accept = "image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8";
+        headers["sec-fetch-dest"] = "image";
+      }
       headers["sec-fetch-mode"] = "no-cors";
       headers["sec-fetch-site"] = "same-origin";
       delete headers["upgrade-insecure-requests"];
@@ -279,14 +289,14 @@ export class Fetcher {
         const first = await attemptDirect();
         if (first !== "challenged") return first;
         if (this.flareConfigured) {
-          this.blockDirectProbes("Cloudflare challenge on cover fetch");
+          this.blockDirectProbes(`Cloudflare challenge on ${purpose} fetch`);
         } else {
           this.limiter.recordChallenge();
         }
       } catch (error) {
         if (error instanceof CooldownError) throw error;
         log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
-        if (this.flareConfigured) this.blockDirectProbes("direct cover fetch error");
+        if (this.flareConfigured) this.blockDirectProbes(`direct ${purpose} fetch error`);
       }
     }
 
@@ -295,17 +305,19 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
-      const image = await this.flare.fetchImage(url);
+      // Audio must not fall back to a PNG screenshot of the URL.
+      const file =
+        purpose === "media" ? await this.flare.fetchDownload(url) : await this.flare.fetchImage(url);
       const ms = (Bun.nanoseconds() - started) / 1e6;
-      if (!image) {
+      if (!file) {
         this.limiter.recordChallenge();
-        this.record(url, "flaresolverr", null, false, true, ms, "no image bytes");
+        this.record(url, "flaresolverr", null, false, true, ms, "no file bytes");
         throw new ChallengeError(url);
       }
       this.limiter.recordSuccess();
-      this.record(url, "flaresolverr", 200, true, false, ms, image.strategy);
-      log.debug(`cover fetched via FlareSolverr ${image.strategy} (${image.bytes.length} bytes)`);
-      return { url, status: 200, bytes: image.bytes, contentType: image.contentType };
+      this.record(url, "flaresolverr", 200, true, false, ms, file.strategy);
+      log.debug(`binary fetched via FlareSolverr ${file.strategy} (${file.bytes.length} bytes)`);
+      return { url, status: 200, bytes: file.bytes, contentType: file.contentType };
     } catch (error) {
       const ms = (Bun.nanoseconds() - started) / 1e6;
       if (error instanceof ChallengeError || error instanceof CooldownError) throw error;

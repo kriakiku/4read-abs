@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import { basename, extname, join } from "node:path";
 import type { Config } from "../config.ts";
 import type { BookWithPeople } from "../catalog/store.ts";
+import type { Fetcher } from "../fetch/fetcher.ts";
 import { logger } from "../log.ts";
 
 const log = logger("audio");
@@ -66,59 +67,51 @@ export function parseM3u(body: string, baseUrl?: string): PlaylistTrack[] {
   return tracks;
 }
 
-function trackFileName(index: number, track: PlaylistTrack, total: number): string {
-  const width = Math.max(2, String(total).length);
-  const prefix = String(index + 1).padStart(width, "0");
-  let stem = track.title ? safeStem(track.title) : "";
-  if (!stem) {
-    try {
-      stem = safeStem(basename(new URL(track.url).pathname).replace(/\.[^.]+$/, "")) || `track-${prefix}`;
-    } catch {
-      stem = `track-${prefix}`;
-    }
-  }
-  let extension = ".mp3";
+function originalNameFromUrl(url: string): { stem: string; extension: string } {
   try {
-    const fromUrl = extname(new URL(track.url).pathname).toLowerCase();
-    if ([".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus"].includes(fromUrl)) extension = fromUrl;
+    // Query/hash must not leak into the local filename — only the path basename matters.
+    const path = new URL(url).pathname;
+    const base = basename(decodeURIComponent(path));
+    const extension = extname(base).toLowerCase();
+    const stem = safeStem(base.slice(0, base.length - extension.length));
+    const allowed = [".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus"];
+    return {
+      stem,
+      extension: allowed.includes(extension) ? extension : ".mp3",
+    };
   } catch {
-    // keep .mp3
+    return { stem: "", extension: ".mp3" };
   }
-  return `${prefix} - ${stem}${extension}`;
+}
+
+/** Local name: `0001-origName.mp3` (fixed 4-digit index; query params stripped from origName). */
+export function trackFileName(index: number, track: PlaylistTrack): string {
+  const prefix = String(index + 1).padStart(4, "0");
+  const fromUrl = originalNameFromUrl(track.url);
+  const stem = fromUrl.stem || (track.title ? safeStem(track.title) : "") || `track-${prefix}`;
+  return `${prefix}-${stem}${fromUrl.extension}`;
 }
 
 function safeStem(value: string): string {
   return value
     .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, " ")
     .replace(/\s+/g, " ")
+    .replace(/^[.\s]+|[.\s]+$/g, "")
     .trim()
     .slice(0, 80);
 }
 
-async function fetchText(url: string, timeoutMs: number): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      accept: "application/vnd.apple.mpegurl,audio/mpegurl,audio/x-mpegurl,text/plain,*/*",
-      "user-agent": "4read-abs (playlist fetch)",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  return await response.text();
-}
-
-async function fetchBinary(url: string, timeoutMs: number): Promise<Uint8Array> {
-  const response = await fetch(url, {
-    headers: {
-      accept: "audio/mpeg,audio/*,*/*",
-      "user-agent": "4read-abs (audio fetch)",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  return new Uint8Array(await response.arrayBuffer());
+/** FlareSolverr returns page HTML for text GETs; peel a bare M3U out of a wrapper if needed. */
+export function extractPlaylistBody(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("#EXTM3U")) return trimmed;
+  // Bare URL-only playlist (no EXTINF header) — only when the whole body is the list.
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  const pre = trimmed.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  if (pre?.[1]) return pre[1].trim();
+  const start = trimmed.indexOf("#EXTM3U");
+  if (start >= 0) return trimmed.slice(start);
+  return trimmed;
 }
 
 async function writeAtomic(path: string, data: Uint8Array): Promise<void> {
@@ -138,12 +131,15 @@ async function fileLooksComplete(path: string, minBytes: number): Promise<boolea
 
 /**
  * Fetch `{DOWNLOAD_BASE}/m33u2/{slug}.m3u` and download each listed media file into `dir`
- * in playlist order (`01 - …mp3`, …). Soft-skips when the backend returns nothing useful.
+ * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
+ * Uses the shared Fetcher (direct → FlareSolverr Chrome) so challenged hosts still work.
+ * Soft-skips when the backend returns nothing useful.
  */
 export async function ensureAudioFromPlaylist(
   book: BookWithPeople,
   dir: string,
   config: Config,
+  fetcher: Fetcher,
 ): Promise<AudioFetchResult | null> {
   const playlistUrl = playlistUrlFor(book, config);
   if (!playlistUrl) return null;
@@ -170,7 +166,8 @@ export async function ensureAudioFromPlaylist(
 
   let body: string;
   try {
-    body = await fetchText(playlistUrl, config.audio.playlistTimeoutMs);
+    const text = await fetcher.getText(playlistUrl);
+    body = extractPlaylistBody(text.body);
   } catch (error) {
     log.warn(`playlist fetch failed for ${book.slug}: ${String(error)}`);
     return null;
@@ -189,7 +186,7 @@ export async function ensureAudioFromPlaylist(
 
   for (let index = 0; index < tracks.length; index += 1) {
     const track = tracks[index]!;
-    const name = trackFileName(index, track, tracks.length);
+    const name = trackFileName(index, track);
     const path = join(dir, name);
     if (await fileLooksComplete(path, config.audio.minFileBytes)) {
       skipped += 1;
@@ -197,12 +194,15 @@ export async function ensureAudioFromPlaylist(
       continue;
     }
     try {
-      const bytes = await fetchBinary(track.url, config.audio.trackTimeoutMs);
-      if (bytes.length < config.audio.minFileBytes) {
-        log.warn(`track too small (${bytes.length}B) for ${track.url}`);
+      const binary = await fetcher.getBinary(track.url, {
+        referer: playlistUrl,
+        purpose: "media",
+      });
+      if (binary.bytes.length < config.audio.minFileBytes) {
+        log.warn(`track too small (${binary.bytes.length}B) for ${track.url}`);
         continue;
       }
-      await writeAtomic(path, bytes);
+      await writeAtomic(path, binary.bytes);
       downloaded += 1;
       files.push(path);
       log.debug(`downloaded ${name} for ${book.source_id}`);
