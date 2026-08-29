@@ -22,7 +22,6 @@ const KEYS = [
   "OPENAI_BASE_URL",
   "OPENAI_MODEL",
   "COVERS_PREFER",
-  "DOWNLOAD_BASE",
 ];
 
 const saved = new Map<string, string | undefined>();
@@ -120,10 +119,11 @@ describe("configuration", () => {
     expect(parseConfigTextWithEnv("").covers.prefer).toBe("hardcover-only");
   });
 
-  test("DOWNLOAD_BASE enables the audio playlist backend", () => {
-    setEnv({ DOWNLOAD_BASE: "http://audio.local:8080/" });
+  test("audio section keeps timeout defaults and uses source.baseUrl", () => {
+    setEnv({});
     const config = parseConfigTextWithEnv("");
-    expect(config.audio.downloadBase).toBe("http://audio.local:8080");
+    expect(config.audio.playlistTimeoutMs).toBe(30_000);
+    expect(config.source.baseUrl).toBe("https://4read.org");
   });
 
   test("saving validates first and leaves a broken file unwritten", async () => {

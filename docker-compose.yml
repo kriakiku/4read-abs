@@ -20,8 +20,6 @@ services:
       HARDCOVER_API_KEY: ${HARDCOVER_API_KEY:-}
       # Optional: OpenCode Go / OpenAI-compatible key for ambiguous matches only.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # Your playlist backend: GET {DOWNLOAD_BASE}/m33u2/{slug}.m3u → ordered mp3 URLs.
-      DOWNLOAD_BASE: ${DOWNLOAD_BASE:-}
       COVERS_PREFER: ${COVERS_PREFER:-hardcover-first}
       ABS_LIBRARY_DIR: /library
       LOG_LEVEL: info

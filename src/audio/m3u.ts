@@ -22,14 +22,9 @@ export interface AudioFetchResult {
   files: string[];
 }
 
-/** True when DOWNLOAD_BASE / audio.downloadBase is configured. */
-export function audioDownloadEnabled(config: Config): boolean {
-  return config.audio.downloadBase.length > 0;
-}
-
 export function playlistUrlFor(book: { slug: string }, config: Config): string | null {
-  if (!audioDownloadEnabled(config) || !book.slug) return null;
-  const base = config.audio.downloadBase.replace(/\/+$/, "");
+  if (!book.slug) return null;
+  const base = config.source.baseUrl.replace(/\/+$/, "");
   return `${base}/m33u2/${encodeURIComponent(book.slug)}.m3u`;
 }
 
@@ -130,10 +125,10 @@ async function fileLooksComplete(path: string, minBytes: number): Promise<boolea
 }
 
 /**
- * Fetch `{DOWNLOAD_BASE}/m33u2/{slug}.m3u` and download each listed media file into `dir`
+ * Fetch `{source.baseUrl}/m33u2/{slug}.m3u` and download each listed media file into `dir`
  * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
  * Uses the shared Fetcher (direct → FlareSolverr Chrome) so challenged hosts still work.
- * Soft-skips when the backend returns nothing useful.
+ * Soft-skips when the playlist is empty or unreachable.
  */
 export async function ensureAudioFromPlaylist(
   book: BookWithPeople,

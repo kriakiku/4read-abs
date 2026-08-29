@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
 import type { AppContext } from "../context.ts";
 import { logger } from "../log.ts";
-import { audioDownloadEnabled, ensureAudioFromPlaylist } from "../audio/m3u.ts";
-import { cachedCover, downloadCoverIfStale, preferredCoverUrl, type DownloadedCover } from "../covers.ts";
+import { ensureAudioFromPlaylist } from "../audio/m3u.ts";
+import { downloadCoverIfStale, type DownloadedCover } from "../covers.ts";
 import { setMeta } from "../db.ts";
 import { getBook, type BookWithPeople } from "../catalog/store.ts";
 import {
@@ -38,7 +38,6 @@ async function ensureCover(ctx: AppContext, book: BookWithPeople): Promise<Downl
 }
 
 async function ensureAudio(ctx: AppContext, book: BookWithPeople): Promise<number> {
-  if (!audioDownloadEnabled(ctx.config)) return 0;
   try {
     const dir = stagingDirFor(book, ctx.config);
     const result = await ensureAudioFromPlaylist(book, dir, ctx.config, ctx.fetcher);
@@ -110,12 +109,6 @@ async function syncOneItem(
     scanned: false,
   };
 
-  const coverMissing = preferredCoverUrl(book, ctx.config) !== null && !(await coverPresent(ctx, book));
-  const wantAudio = audioDownloadEnabled(ctx.config);
-  if (!reconciled.changed && link?.written_hash === hash && !coverMissing && !wantAudio) {
-    return result;
-  }
-
   const cover = await ensureCover(ctx, book);
   const audioCount = await ensureAudio(ctx, book);
   const staged = await stageBook(book, reconciled.payload, cover, ctx.config);
@@ -149,10 +142,6 @@ async function syncOneItem(
   }
 
   return result;
-}
-
-async function coverPresent(ctx: AppContext, book: BookWithPeople): Promise<boolean> {
-  return (await cachedCover(book, ctx.config)) !== null;
 }
 
 /**

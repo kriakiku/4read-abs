@@ -113,11 +113,18 @@ https://cdn.example/c.mp3
     expect(tracks[0]!.url).toBe("http://backend.local/m33u2/files/1.mp3");
   });
 
-  test("builds the playlist URL from DOWNLOAD_BASE and slug", () => {
-    const config = configSchema.parse({ audio: { downloadBase: "http://audio.local/" } });
+  test("builds the playlist URL from source.baseUrl and slug", () => {
+    const config = configSchema.parse({
+      source: { baseUrl: "https://4read.org/" },
+    });
     expect(playlistUrlFor(book(), config)).toBe(
-      "http://audio.local/m33u2/mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u",
+      "https://4read.org/m33u2/mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u",
     );
+  });
+
+  test("returns null when the book has no slug", () => {
+    const config = configSchema.parse({});
+    expect(playlistUrlFor(book({ slug: "" }), config)).toBeNull();
   });
 
   test("trackFileName uses 4-digit index and path basename, strips query", () => {
@@ -170,7 +177,7 @@ describe("playlist audio fetch", () => {
 
     const { fetcher } = await makeFetcher();
     const config = configSchema.parse({
-      audio: { downloadBase: `http://127.0.0.1:${origin.port}` },
+      source: { baseUrl: `http://127.0.0.1:${origin.port}` },
     });
     const target = join(dir, "book");
     const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
@@ -251,9 +258,13 @@ describe("playlist audio fetch", () => {
     const db = openDb(dbDir);
     const config = configSchema.parse({
       paths: { data: dbDir },
-      source: { minIntervalMs: 0, challengeCooldownMs: 50, requestTimeoutMs: 5_000 },
+      source: {
+        baseUrl: `http://127.0.0.1:${origin.port}`,
+        minIntervalMs: 0,
+        challengeCooldownMs: 50,
+        requestTimeoutMs: 5_000,
+      },
       flaresolverr: { url: `http://127.0.0.1:${flare.port}/`, mode: "always", maxTimeoutMs: 5_000 },
-      audio: { downloadBase: `http://127.0.0.1:${origin.port}` },
     });
     const fetcher = new Fetcher(db, config);
     fetchers.push(fetcher);

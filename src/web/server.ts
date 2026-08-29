@@ -55,7 +55,7 @@ export function createApp(ctx: AppContext): Hono {
         audiobookshelfUrl: ctx.config.audiobookshelf.url || null,
         hardcover: ctx.hardcover.enabled,
         ai: ctx.config.ai.enabled && ctx.config.ai.apiKey.length > 0,
-        audioDownload: ctx.config.audio.downloadBase.length > 0,
+        audioDownload: true,
         coversPrefer: ctx.config.covers.prefer,
         absLibraryPath: ctx.config.paths.absLibrary || null,
         stagingPath: ctx.config.paths.staging,

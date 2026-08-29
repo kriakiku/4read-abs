@@ -126,11 +126,9 @@ export const configSchema = z.object({
   audio: z
     .object({
       /**
-       * Your playlist backend base URL. When set, sync fetches
-       * `{downloadBase}/m33u2/{slug}.m3u` and downloads the listed mp3s into the book folder.
-       * Override with DOWNLOAD_BASE.
+       * Timeouts and size floor for `{source.baseUrl}/m33u2/{slug}.m3u` track downloads
+       * during sync / createFolders.
        */
-      downloadBase: z.string().default(""),
       playlistTimeoutMs: z.number().int().min(1000).default(30_000),
       trackTimeoutMs: z.number().int().min(1000).default(120_000),
       minFileBytes: z.number().int().min(1).default(1024),
@@ -250,13 +248,10 @@ function applyEnv(config: Config): Config {
     c.covers.prefer = coverPrefer;
   }
 
-  c.audio.downloadBase = process.env.DOWNLOAD_BASE ?? c.audio.downloadBase;
-
   // Normalise the base URL once so URL joining is predictable everywhere else.
   c.source.baseUrl = c.source.baseUrl.replace(/\/+$/, "");
   c.audiobookshelf.url = c.audiobookshelf.url.replace(/\/+$/, "");
   c.ai.baseUrl = c.ai.baseUrl.replace(/\/+$/, "");
-  c.audio.downloadBase = c.audio.downloadBase.replace(/\/+$/, "");
   return c;
 }
 

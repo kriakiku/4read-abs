@@ -27,7 +27,6 @@ Environment:
   ABS_LIBRARY_DIR          Audiobookshelf library as mounted for this process
   ABS_URL, ABS_API_KEY     Audiobookshelf server and API key
   HARDCOVER_API_KEY        Enables Hardcover enrichment
-  DOWNLOAD_BASE            Optional playlist backend; GET {base}/m33u2/{slug}.m3u
   COVERS_PREFER            hardcover-first (default) | hardcover-only | source
   OPENAI_API_KEY           Optional OpenAI-compatible key (OpenCode Go / Zen)
   OPENAI_BASE_URL          Default https://opencode.ai/zen/go/v1
@@ -38,7 +37,7 @@ Environment:
   LOG_LEVEL                debug | info | warn | error
 `;
 
-const VERSION = "0.1.8";
+const VERSION = "0.1.9";
 
 async function serve(ctx: AppContext): Promise<void> {
   const app = createApp(ctx);

@@ -200,7 +200,6 @@ cp config.example.yaml config.yaml
 | `ABS_LIBRARY_DIR` | Бібліотека ABS, як її бачить цей процес |
 | `FLARESOLVERR_URL`, `FLARESOLVERR_MODE` | Обхід Cloudflare |
 | `HARDCOVER_API_KEY` | Опційне збагачення з Hardcover (id, ISBN, обкладинки) |
-| `DOWNLOAD_BASE` | Опційний бекенд плейлистів: `GET {base}/m33u2/{slug}.m3u` → mp3 |
 | `COVERS_PREFER` | `hardcover-first` (за замовч.) / `hardcover-only` / `source` |
 | `OPENAI_API_KEY` або `OPENCODE_GO_API_KEY` | Опційний AI лише для неоднозначних Hardcover-матчів |
 | `OPENAI_BASE_URL` | За замовч. `https://opencode.ai/zen/go/v1` |
@@ -332,9 +331,9 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Обмеження обсягу
 
-4read.org **не** використовується для завантаження аудіо (`robots.txt` забороняє
-`/m3u/`, `/bed/`, `do=download`). Медіа можна підтягнути з **вашого** бекенду через
-`DOWNLOAD_BASE` (див. нижче). Інакше файли кладете в теку ABS самі.
+4read.org **не** пропонує прямий `do=download` у `robots.txt` (`/m3u/`, `/bed/`).
+Медіа підтягуються з плейлистів на **тому ж** `source.baseUrl` (див. нижче).
+Якщо плейлист недоступний — файли можна покласти в теку ABS вручну.
 
 За замовчуванням `schedule.backfillAll: false`: після sitemap деталі сторінок
 завантажуються **лише** для книг із підписок / черги (facet-лістинги
@@ -342,25 +341,21 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 `backfillAll: true`, лише якщо потрібен повний каталог — інакше в логах з’являться
 сторонні новинки з sitemap.
 
-## Аудіо з вашого бекенду (опційно)
+## Аудіо з плейлистів 4read
 
-Якщо підняли власний сервіс пошуку по публічних ресурсах:
-
-```bash
-DOWNLOAD_BASE=http://your-backend:8080
-```
-
-Під час `sync` / `createFolders` для кожної книги з `slug` виконується:
+Під час `sync` / `createFolders` для кожної книги з `slug` виконується запит до
+базового домену джерела (`source.baseUrl`, зазвичай `https://4read.org`):
 
 ```
-GET {DOWNLOAD_BASE}/m33u2/{slug}.m3u
+GET {source.baseUrl}/m33u2/{slug}.m3u
 ```
 
 Очікується M3U зі списком mp3 (у потрібному порядку). Запити до плейлиста й треків
 йдуть через спільний Fetcher (прямий запит → FlareSolverr/Chrome при challenge), як і
 сторінки джерела. Файли зберігаються в staging / бібліотеку як `0001-origName.mp3`,
 `0002-….mp3`, … (ім’я з pathname URL, query-параметри ігноруються). Повторний sync
-пропускає вже скачані треки (маркер `.4read-audio-playlist`).
+пропускає вже скачані треки (маркер `.4read-audio-playlist`). Порожній або недоступний
+плейлист — soft-fail.
 
 ## Hardcover (опційно)
 
