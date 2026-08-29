@@ -97,19 +97,58 @@
       button:disabled { opacity: 0.45; cursor: not-allowed; }
       button.primary { background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); border-color: var(--accent); color: #fff; }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-      textarea {
-        width: 100%;
+      .yaml-editor {
+        position: relative;
         min-height: 380px;
-        resize: vertical;
-        background: #0b0e12;
-        color: var(--text);
         border: 1px solid var(--border);
         border-radius: 8px;
+        background: #0b0e12;
+        overflow: hidden;
+      }
+      .yaml-editor:focus-within { border-color: var(--accent); }
+      .yaml-editor .yaml-highlight,
+      .yaml-editor textarea {
+        margin: 0;
         padding: 12px 14px;
+        border: 0;
+        border-radius: 0;
         font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         tab-size: 2;
+        white-space: pre;
+        word-wrap: normal;
+        overflow-wrap: normal;
+        overflow: auto;
+        width: 100%;
+        height: 380px;
+        resize: vertical;
+        box-sizing: border-box;
       }
-      textarea:focus { outline: none; border-color: var(--accent); }
+      .yaml-editor .yaml-highlight {
+        position: absolute;
+        inset: 0;
+        color: var(--text);
+        pointer-events: none;
+        z-index: 0;
+      }
+      .yaml-editor textarea {
+        position: relative;
+        z-index: 1;
+        background: transparent;
+        color: transparent;
+        caret-color: var(--text);
+        outline: none;
+      }
+      .yaml-editor textarea::selection {
+        background: color-mix(in srgb, var(--accent) 35%, transparent);
+        color: transparent;
+      }
+      .y-key { color: #7eb6ff; }
+      .y-string { color: #9fd59f; }
+      .y-number { color: #e0b055; }
+      .y-bool { color: #d7a1ff; }
+      .y-null { color: #d7a1ff; }
+      .y-comment { color: #6d7a8a; font-style: italic; }
+      .y-punct { color: #93a0b0; }
       .list { display: grid; gap: 10px; }
       .item {
         background: var(--panel-2);
@@ -226,10 +265,14 @@
         </h2>
         <div class="body">
           <p class="msg" style="color: var(--muted); margin-top: 0">
-            YAML. Secrets (<code>ABS_URL</code>, <code>ABS_API_KEY</code>, <code>HARDCOVER_API_KEY</code>,
+            YAML with syntax highlighting. Tab / Shift+Tab indent. Secrets
+            (<code>ABS_URL</code>, <code>ABS_API_KEY</code>, <code>HARDCOVER_API_KEY</code>,
             <code>FLARESOLVERR_URL</code>) come from the environment and override this file.
           </p>
-          <textarea id="config-text" spellcheck="false"></textarea>
+          <div class="yaml-editor" id="config-editor">
+            <pre class="yaml-highlight" id="config-highlight" aria-hidden="true"></pre>
+            <textarea id="config-text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+          </div>
         </div>
       </section>
 
@@ -588,9 +631,135 @@
 
       async function loadConfig() {
         const data = await api("/api/config");
-        $("config-text").value = data.text;
+        setConfigText(data.text);
         $("config-msg").textContent = data.path;
         $("config-msg").className = "msg";
+      }
+
+      function escapeHtml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function highlightYamlValue(value) {
+        if (!value) return "";
+        let comment = "";
+        let body = value;
+        if (!/^['"]/.test(value)) {
+          const hash = value.indexOf(" #");
+          if (hash >= 0) {
+            body = value.slice(0, hash);
+            comment = value.slice(hash);
+          } else if (value.trimStart().startsWith("#")) {
+            return `<span class="y-comment">${escapeHtml(value)}</span>`;
+          }
+        }
+        let painted;
+        const trimmed = body.trim();
+        if (/^(['"]).*\1$/.test(trimmed) || /^['"]/.test(trimmed)) {
+          painted = `<span class="y-string">${escapeHtml(body)}</span>`;
+        } else if (/^(true|false)$/i.test(trimmed)) {
+          painted = `<span class="y-bool">${escapeHtml(body)}</span>`;
+        } else if (/^(null|~)$/i.test(trimmed)) {
+          painted = `<span class="y-null">${escapeHtml(body)}</span>`;
+        } else if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+          painted = `<span class="y-number">${escapeHtml(body)}</span>`;
+        } else if (trimmed === "|" || trimmed === ">" || trimmed === "|-" || trimmed === ">-") {
+          painted = `<span class="y-punct">${escapeHtml(body)}</span>`;
+        } else {
+          painted = escapeHtml(body);
+        }
+        return painted + (comment ? `<span class="y-comment">${escapeHtml(comment)}</span>` : "");
+      }
+
+      function highlightYaml(source) {
+        const lines = source.split("\n");
+        const painted = lines.map((line) => {
+          if (/^\s*#/.test(line)) return `<span class="y-comment">${escapeHtml(line)}</span>`;
+          if (line.trim() === "") return escapeHtml(line);
+          if (/^\s*-\s+/.test(line) && !/^\s*-\s+[^:#\n]+:/.test(line)) {
+            const match = /^(\s*-\s+)(.*)$/.exec(line);
+            return escapeHtml(match[1]) + highlightYamlValue(match[2]);
+          }
+          const match = /^(\s*(?:-\s+)?)([^:#\n][^:\n]*?)(:)(\s*)(.*)$/.exec(line);
+          if (!match) return escapeHtml(line);
+          return (
+            escapeHtml(match[1]) +
+            `<span class="y-key">${escapeHtml(match[2])}</span>` +
+            `<span class="y-punct">${escapeHtml(match[3])}</span>` +
+            escapeHtml(match[4]) +
+            highlightYamlValue(match[5])
+          );
+        });
+        return painted.join("\n") + "\n";
+      }
+
+      function refreshConfigHighlight() {
+        const textarea = $("config-text");
+        const highlight = $("config-highlight");
+        highlight.innerHTML = highlightYaml(textarea.value);
+        highlight.scrollTop = textarea.scrollTop;
+        highlight.scrollLeft = textarea.scrollLeft;
+      }
+
+      function setConfigText(text) {
+        $("config-text").value = text;
+        refreshConfigHighlight();
+      }
+
+      function indentConfigSelection(outdent) {
+        const textarea = $("config-text");
+        const value = textarea.value;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        const afterEnd = end > start ? end - 1 : end;
+        const newlineAt = value.indexOf("\n", afterEnd);
+        const blockEnd = newlineAt === -1 ? value.length : newlineAt;
+        const block = value.slice(lineStart, blockEnd);
+        const lines = block.split("\n");
+        const next = lines
+          .map((line) => {
+            if (outdent) {
+              if (line.startsWith("  ")) return line.slice(2);
+              if (line.startsWith("\t")) return line.slice(1);
+              if (line.startsWith(" ")) return line.slice(1);
+              return line;
+            }
+            return `  ${line}`;
+          })
+          .join("\n");
+        textarea.setRangeText(next, lineStart, blockEnd, "select");
+        if (start === end) {
+          if (outdent) {
+            const delta = block.startsWith("  ") ? 2 : block.startsWith(" ") || block.startsWith("\t") ? 1 : 0;
+            textarea.selectionStart = textarea.selectionEnd = Math.max(lineStart, start - delta);
+          } else {
+            textarea.selectionStart = textarea.selectionEnd = start + 2;
+          }
+        }
+        refreshConfigHighlight();
+      }
+
+      function bindConfigEditor() {
+        const textarea = $("config-text");
+        textarea.addEventListener("input", refreshConfigHighlight);
+        textarea.addEventListener("scroll", () => {
+          const highlight = $("config-highlight");
+          highlight.scrollTop = textarea.scrollTop;
+          highlight.scrollLeft = textarea.scrollLeft;
+        });
+        textarea.addEventListener("keydown", (event) => {
+          if (event.key !== "Tab") return;
+          event.preventDefault();
+          indentConfigSelection(event.shiftKey);
+        });
+        const observer = new ResizeObserver(() => {
+          $("config-highlight").style.height = `${textarea.offsetHeight}px`;
+        });
+        observer.observe(textarea);
       }
 
       $("btn-refresh").addEventListener("click", () => {
@@ -662,6 +831,8 @@
           await loadQueue();
         });
       }
+
+      bindConfigEditor();
 
       async function boot() {
         await Promise.allSettled([loadStatus(), loadConfig(), loadQueue(), loadLogs()]);
