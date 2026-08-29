@@ -222,6 +222,21 @@ export async function backfillDetails(ctx: AppContext, limit: number): Promise<B
     ? booksNeedingDetail(ctx.db, limit)
     : booksNeedingDetailForSubscriptions(ctx.db, ctx.config.subscriptions, limit);
 
+  if (pending.length === 0) {
+    const pendingAll = ctx.db
+      .query<{ n: number }, []>("select count(*) as n from books where detail_state = 'pending'")
+      .get()?.n ?? 0;
+    log.info(
+      ctx.config.schedule.backfillAll
+        ? `backfill: nothing pending (catalogue pending=${pendingAll})`
+        : `backfill: nothing pending for subscriptions/queue (catalogue pending=${pendingAll}; set schedule.backfillAll: true to fetch all)`,
+    );
+    setMeta(ctx.db, "backfill_ran_at", new Date().toISOString());
+    return result;
+  }
+
+  log.info(`backfill: fetching ${pending.length} detail page(s)`);
+
   for (const book of pending) {
     if (ctx.fetcher.limiter.inCooldown() && !ctx.fetcher.flareConfigured) {
       result.stoppedEarly = true;
@@ -249,6 +264,10 @@ export async function backfillDetails(ctx: AppContext, limit: number): Promise<B
   }
 
   setMeta(ctx.db, "backfill_ran_at", new Date().toISOString());
+  log.info(
+    `backfill done: ${result.ok} ok, ${result.skipped} skipped, ${result.failed} failed` +
+      (result.stoppedEarly ? " (stopped early)" : ""),
+  );
   return result;
 }
 

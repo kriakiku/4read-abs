@@ -207,6 +207,10 @@ export async function syncLibrary(ctx: AppContext): Promise<SyncResult> {
 
   if (ctx.config.sync.createFolders) {
     result.created = await createPendingFolders(ctx, result);
+  } else if (result.items === 0) {
+    log.info(
+      "sync: ABS library is empty and sync.createFolders is off — accept queue entries and enable createFolders to build folders",
+    );
   }
 
   setMeta(ctx.db, "sync_ran_at", new Date().toISOString());
@@ -236,6 +240,16 @@ async function createPendingFolders(ctx: AppContext, result: SyncResult): Promis
     .all();
 
   let created = 0;
+  if (rows.length === 0) {
+    const news =
+      ctx.db.query<{ n: number }, []>("select count(*) as n from queue where state = 'new'").get()?.n ?? 0;
+    log.info(
+      `createFolders: no accepted/prepared entries` +
+        (news > 0 ? ` (${news} still in state=new — accept them in the UI)` : ""),
+    );
+    return 0;
+  }
+
   for (const row of rows) {
     const book = getBook(ctx.db, row.source_id);
     if (!book || book.detail_state !== "ok") continue;

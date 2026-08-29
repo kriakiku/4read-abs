@@ -32,6 +32,7 @@ export interface RefreshResult {
   queued: number;
   deduped: number;
   alreadyLinked: number;
+  alreadyQueued: number;
 }
 
 /**
@@ -49,6 +50,7 @@ export async function refreshQueue(ctx: AppContext, options: { crawlFacets?: boo
     queued: 0,
     deduped: 0,
     alreadyLinked: 0,
+    alreadyQueued: 0,
   };
 
   // Pulling the facet listing first makes sure newly published volumes are known even when
@@ -109,6 +111,7 @@ export async function refreshQueue(ctx: AppContext, options: { crawlFacets?: boo
       }
 
       if (existing) {
+        result.alreadyQueued += 1;
         ctx.db.query("update queue set reason = ?, updated_at = ? where source_id = ?").run(reason, nowIso(), sourceId);
         continue;
       }
@@ -124,7 +127,7 @@ export async function refreshQueue(ctx: AppContext, options: { crawlFacets?: boo
   insert();
 
   log.info(
-    `subscriptions: ${result.subscriptions}, matched ${result.matched}, deduped ${result.deduped}, queued ${result.queued}`,
+    `subscriptions: ${result.subscriptions}, matched ${result.matched}, deduped ${result.deduped}, queued ${result.queued}, alreadyQueued ${result.alreadyQueued}, alreadyLinked ${result.alreadyLinked}`,
   );
   return result;
 }
