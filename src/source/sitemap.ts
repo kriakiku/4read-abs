@@ -36,6 +36,20 @@ export function parseSitemapIndex(xml: string): string[] {
   return parseSitemap(xml).map((entry) => entry.loc);
 }
 
+/**
+ * 4read's index lists category/tags/static sitemaps alongside `news_pages.xml`.
+ * Only the news sitemap carries article URLs; the others waste FlareSolverr budget
+ * (and previously matched a naive `/page/` filter).
+ */
+export function isArticleSitemapUrl(url: string): boolean {
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    return /(^|\/)news_pages\.xml$/.test(path) || /(^|\/)news[_-]pages\.xml$/.test(path);
+  } catch {
+    return /news_pages\.xml(?:$|\?)/i.test(url);
+  }
+}
+
 /** Only the entries that look like article pages, with their `lastmod` for change detection. */
 export function parseBookSitemap(xml: string, base = DEFAULT_BASE_URL): SitemapBookEntry[] {
   const books = new Map<number, SitemapBookEntry>();

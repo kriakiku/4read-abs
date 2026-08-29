@@ -55,14 +55,18 @@
 
 Режими `FLARESOLVERR_MODE`:
 
-- `auto` (за замовчуванням) — спочатку прямий запит, FlareSolverr лише після challenge
-- `always` — усі сторінки через FlareSolverr
+- `always` (**рекомендовано** в docker-compose) — усі сторінки через FlareSolverr;
+  Bun не може перевикористати `cf_clearance` (інший TLS-fingerprint), тож прямі
+  запити на 4read майже завжди даремно ловлять challenge
+- `auto` — один прямий probe, після challenge лишається на FlareSolverr ~30 хв
+  (не спалить cooldown на приречених direct-запитах)
 - `never` — ніколи не використовувати
 
 Сайт чутливий до сплесків, а не до стабільного темпу: інтервал подвоюється після
-challenge, зменшується, коли все спокійно, повторні challenge вмикають довгий cooldown.
-Перший повний обхід ~5 000 сторінок займе години; він відновлюваний. Щоденні синхрони
-дешеві завдяки `lastmod`.
+challenge **від FlareSolverr**, зменшується, коли все спокійно. Повторні невдачі
+браузера вмикають cooldown для прямих запитів; FlareSolverr при цьому **не
+блокується**. Sitemap бере лише `news_pages.xml` (не `category_pages` /
+`tags_pages` / `static_pages`).
 
 Обкладинки з 4read Cloudflare блокує для звичайного HTTP-клієнта навіть із
 `cf_clearance` (інший TLS-fingerprint). За замовчуванням `covers.prefer:

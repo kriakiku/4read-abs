@@ -12,7 +12,9 @@ services:
       - "127.0.0.1:8480:8480"
     environment:
       FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      FLARESOLVERR_MODE: auto
+      # Bun cannot reuse FlareSolverr clearance cookies (TLS fingerprint). "always"
+      # skips doomed direct probes; "auto" also sticks to Flare after the first challenge.
+      FLARESOLVERR_MODE: ${FLARESOLVERR_MODE:-always}
       ABS_URL: ${ABS_URL:-}
       ABS_API_KEY: ${ABS_API_KEY:-}
       HARDCOVER_API_KEY: ${HARDCOVER_API_KEY:-}

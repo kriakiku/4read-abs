@@ -49,10 +49,19 @@ function looksLikeChallenge(status: number, body: string, headers?: Headers): bo
   );
 }
 
+/**
+ * How long to skip doomed Bun `fetch` probes after Cloudflare rejects them. Clearance cookies
+ * from FlareSolverr do not transfer (different TLS fingerprint), so once direct fails we stick
+ * to the browser until this window elapses.
+ */
+const DIRECT_BLOCK_MS = 30 * 60_000;
+
 export class Fetcher {
   readonly jar: CookieJar;
   readonly limiter: AdaptiveLimiter;
   private readonly flare: FlareSolverrClient;
+  /** When set, skip direct origin probes and go straight to FlareSolverr. */
+  private directBlockedUntil = 0;
 
   constructor(
     private readonly db: Db,
@@ -73,6 +82,21 @@ export class Fetcher {
 
   get flareConfigured(): boolean {
     return this.flare.configured && this.config.flaresolverr.mode !== "never";
+  }
+
+  private preferFlareFirst(): boolean {
+    if (!this.flareConfigured) return false;
+    if (this.config.flaresolverr.mode === "always") return true;
+    return Date.now() < this.directBlockedUntil;
+  }
+
+  private blockDirectProbes(reason: string): void {
+    if (!this.flareConfigured) return;
+    const until = Date.now() + DIRECT_BLOCK_MS;
+    if (until > this.directBlockedUntil) {
+      this.directBlockedUntil = until;
+      log.info(`skipping direct fetches for ${Math.round(DIRECT_BLOCK_MS / 60_000)}m (${reason})`);
+    }
   }
 
   private userAgent(): string {
@@ -110,16 +134,18 @@ export class Fetcher {
   }
 
   /**
-   * Fetch a page as text. Tries a plain request first (cheap, and works once clearance is
-   * cached) and escalates to FlareSolverr when a challenge appears.
+   * Fetch a page as text. Tries a plain request first (cheap when the origin allows it) and
+   * escalates to FlareSolverr on a challenge. Once Bun's TLS fingerprint is rejected, further
+   * direct probes are skipped for a while — clearance cookies cannot be reused across JA3s.
    */
   async getText(url: string, options: { referer?: string } = {}): Promise<TextResult> {
-    if (this.limiter.inCooldown() && this.config.flaresolverr.mode !== "always") {
+    // Cooldown only blocks hammering the origin directly. FlareSolverr is a different client
+    // and is how we keep crawling while Bun's fingerprint is rejected.
+    if (this.limiter.inCooldown() && !this.flareConfigured) {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
 
-    const mode = this.config.flaresolverr.mode;
-    const flareFirst = mode === "always" && this.flare.configured;
+    const flareFirst = this.preferFlareFirst() || this.limiter.inCooldown();
 
     if (!flareFirst) {
       await this.limiter.acquire();
@@ -143,9 +169,14 @@ export class Fetcher {
           return { url: response.url || url, status: response.status, body, strategy: "direct" };
         }
 
-        this.limiter.recordChallenge();
         this.record(url, "direct", response.status, false, true, ms);
         log.debug(`challenge on direct fetch of ${url}`);
+        if (this.flareConfigured) {
+          // Expected on this source: do not burn the consecutive-challenge budget.
+          this.blockDirectProbes("Cloudflare challenge on Bun fetch");
+        } else {
+          this.limiter.recordChallenge();
+        }
       } catch (error) {
         const ms = (Bun.nanoseconds() - started) / 1e6;
         if (error instanceof Error && error.name === "ChallengeError") throw error;
@@ -153,6 +184,7 @@ export class Fetcher {
         this.record(url, "direct", null, false, false, ms, String(error));
         if (!this.flareConfigured) throw error;
         log.debug(`direct fetch failed (${String(error)}), trying FlareSolverr`);
+        this.blockDirectProbes("direct fetch error");
       }
     }
 
@@ -160,13 +192,9 @@ export class Fetcher {
       throw new ChallengeError(url);
     }
 
-    if (this.limiter.inCooldown() && mode !== "always") {
-      throw new CooldownError(this.limiter.cooldownRemainingMs());
-    }
-
-    // FlareSolverr runs its own browser, so it does not consume our pacing budget for the
-    // origin in the same way; still serialise to avoid piling up browser sessions.
-    await this.limiter.acquire();
+    // FlareSolverr runs its own browser; still serialise to avoid piling up sessions, but do
+    // not wait out an origin cooldown that only applies to Bun's fingerprint.
+    await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
       const result = await this.flare.get(url);
@@ -179,7 +207,6 @@ export class Fetcher {
         this.record(url, "flaresolverr", result.status, false, true, ms);
         throw new ChallengeError(url);
       }
-      // Clearance cookies should let later direct requests through.
       this.limiter.recordSuccess();
       this.record(url, "flaresolverr", result.status, result.status < 400, false, ms);
       if (result.status >= 400) {
@@ -201,14 +228,12 @@ export class Fetcher {
    * FlareSolverr's browser (download API or a PNG screenshot of the image URL).
    */
   async getBinary(url: string, options: { referer?: string } = {}): Promise<BinaryResult> {
-    if (this.limiter.inCooldown()) {
+    if (this.limiter.inCooldown() && !this.flareConfigured) {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
 
     const attemptDirect = async (): Promise<BinaryResult | "challenged"> => {
-      if (this.limiter.inCooldown()) return "challenged";
       await this.limiter.acquire();
-      if (this.limiter.inCooldown()) return "challenged";
 
       const started = Bun.nanoseconds();
       const headers = this.browserHeaders(options.referer);
@@ -229,7 +254,6 @@ export class Fetcher {
       this.jar.absorbSetCookie(response.headers);
 
       if (response.status === 403 || response.status === 503 || response.status === 429) {
-        this.limiter.recordChallenge();
         this.record(url, "direct", response.status, false, true, ms);
         return "challenged";
       }
@@ -240,7 +264,6 @@ export class Fetcher {
       const bytes = new Uint8Array(await response.arrayBuffer());
       // Cloudflare sometimes returns an HTML interstitial with HTTP 200.
       if (looksLikeChallenge(response.status, new TextDecoder().decode(bytes.slice(0, 2000)), response.headers)) {
-        this.limiter.recordChallenge();
         this.record(url, "direct", response.status, false, true, ms);
         return "challenged";
       }
@@ -249,22 +272,27 @@ export class Fetcher {
       return { url, status: response.status, bytes, contentType };
     };
 
-    // Always try a direct download first. When Cloudflare blocks it, fall back to FlareSolverr's
-    // browser — Bun cannot reuse clearance cookies (different TLS fingerprint).
-    try {
-      const first = await attemptDirect();
-      if (first !== "challenged") return first;
-    } catch (error) {
-      if (error instanceof CooldownError) throw error;
-      log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
+    const flareFirst = this.preferFlareFirst() || this.limiter.inCooldown();
+
+    if (!flareFirst) {
+      try {
+        const first = await attemptDirect();
+        if (first !== "challenged") return first;
+        if (this.flareConfigured) {
+          this.blockDirectProbes("Cloudflare challenge on cover fetch");
+        } else {
+          this.limiter.recordChallenge();
+        }
+      } catch (error) {
+        if (error instanceof CooldownError) throw error;
+        log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
+        if (this.flareConfigured) this.blockDirectProbes("direct cover fetch error");
+      }
     }
 
-    if (this.limiter.inCooldown()) {
-      throw new CooldownError(this.limiter.cooldownRemainingMs());
-    }
     if (!this.flareConfigured) throw new ChallengeError(url);
 
-    await this.limiter.acquire();
+    await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
       const image = await this.flare.fetchImage(url);
@@ -290,12 +318,12 @@ export class Fetcher {
   /** Ask FlareSolverr to solve a challenge for the origin and keep the resulting cookies. */
   async refreshClearance(): Promise<boolean> {
     if (!this.flareConfigured) return false;
-    if (this.limiter.inCooldown()) return this.jar.hasClearance();
     try {
-      await this.limiter.acquire();
+      await this.limiter.acquire({ ignoreCooldown: true });
       const result = await this.flare.get(`${this.config.source.baseUrl}/`);
       this.jar.setUserAgent(result.userAgent);
       if (result.cookies.length) this.jar.set(result.cookies);
+      this.blockDirectProbes("clearance refresh (Bun cannot reuse cookies)");
       return this.jar.hasClearance();
     } catch (error) {
       log.warn(`clearance refresh failed: ${String(error)}`);

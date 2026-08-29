@@ -244,6 +244,22 @@ describe("adaptive limiter", () => {
     await limiter.acquire();
     expect(Date.now() - started).toBeGreaterThanOrEqual(60);
   });
+
+  test("acquire can skip cooldown for FlareSolverr traffic", async () => {
+    const limiter = new AdaptiveLimiter({
+      minIntervalMs: 0,
+      maxIntervalMs: 20,
+      challengeCooldownMs: 60_000,
+      cooldownAfterChallenges: 1,
+    });
+    await limiter.acquire();
+    limiter.recordChallenge();
+    expect(limiter.inCooldown()).toBe(true);
+
+    const started = Date.now();
+    await limiter.acquire({ ignoreCooldown: true });
+    expect(Date.now() - started).toBeLessThan(50);
+  });
 });
 
 describe("fetcher", () => {
@@ -258,21 +274,24 @@ describe("fetcher", () => {
     await fetcher.close();
   });
 
-  test("a challenge escalates to FlareSolverr and the clearance is reused", async () => {
+  test("a challenge escalates to FlareSolverr and sticks to it", async () => {
     const h = await harness({ requireClearance: true });
     const fetcher = new Fetcher(h.db, config(h));
 
     const first = await fetcher.getText(`http://localhost:${h.origin.port}/1-x.html`);
     expect(first.strategy).toBe("flaresolverr");
     expect(fetcher.jar.hasClearance()).toBe(true);
-    // FlareSolverr reports the browser's user agent; later direct calls must match it.
+    // FlareSolverr reports the browser's user agent; later probes reuse it when needed.
     expect(fetcher.jar.userAgent).toContain("FlareSolverr");
 
+    // Bun cannot reuse cf_clearance (different TLS fingerprint), so once direct is challenged
+    // we skip further origin probes and stay on FlareSolverr.
     const second = await fetcher.getText(`http://localhost:${h.origin.port}/2-y.html`);
-    expect(second.strategy).toBe("direct");
-
-    const lastRequest = h.originRequests.at(-1);
-    expect(lastRequest?.cookie).toContain("cf_clearance=granted");
+    expect(second.strategy).toBe("flaresolverr");
+    expect(h.originRequests.length).toBe(1);
+    // Doomed direct probes must not burn the consecutive-challenge cooldown budget.
+    expect(fetcher.limiter.state().challenges).toBe(0);
+    expect(fetcher.limiter.inCooldown()).toBe(false);
     await fetcher.close();
   });
 
@@ -342,7 +361,7 @@ describe("fetcher", () => {
     await fetcher.close();
   });
 
-  test("cover fetches refuse to probe during cooldown", async () => {
+  test("cover fetches still use FlareSolverr during origin cooldown", async () => {
     const h = await harness({ requireClearance: true });
     const fetcher = new Fetcher(h.db, config(h, {
       paths: { data: h.dir },
@@ -358,10 +377,30 @@ describe("fetcher", () => {
     expect(fetcher.limiter.inCooldown()).toBe(true);
 
     const before = h.originRequests.length;
+    const cover = await fetcher.getBinary(`http://localhost:${h.origin.port}/uploads/x.webp`);
+    expect(cover.bytes.length).toBeGreaterThan(64);
+    // Origin must not be probed while we are in cooldown — go straight to FlareSolverr.
+    expect(h.originRequests.length).toBe(before);
+    expect(h.flareRequests.some((request) => request.returnScreenshot === true)).toBe(true);
+    await fetcher.close();
+  });
+
+  test("without FlareSolverr, cooldown still blocks cover fetches", async () => {
+    const h = await harness({ requireClearance: true });
+    const fetcher = new Fetcher(h.db, config(h, {
+      paths: { data: h.dir },
+      source: {
+        baseUrl: `http://localhost:${h.origin.port}`,
+        minIntervalMs: 0,
+        challengeCooldownMs: 10_000,
+      },
+      flaresolverr: { url: "", mode: "auto" },
+    }));
+
+    for (let i = 0; i < 3; i += 1) fetcher.limiter.recordChallenge();
     await expect(fetcher.getBinary(`http://localhost:${h.origin.port}/uploads/x.webp`)).rejects.toThrow(
       CooldownError,
     );
-    expect(h.originRequests.length).toBe(before);
     await fetcher.close();
   });
 
