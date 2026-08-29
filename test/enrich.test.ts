@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { inferVolumeHint, isMostlyLatin, parseSequenceNumber } from "../src/enrich/latin.ts";
+import {
+  inferVolumeHint,
+  isMostlyLatin,
+  parseSequenceNumber,
+  parseYearRange,
+  yearRangeContains,
+} from "../src/enrich/latin.ts";
 
 describe("latin / volume helpers", () => {
   test("detects English series names and Ukrainian titles", () => {
@@ -20,5 +26,15 @@ describe("latin / volume helpers", () => {
     expect(inferVolumeHint("Всі молоді чуваки: Другий рік")).toBe(2);
     expect(inferVolumeHint("All the Young Dudes: Year Three")).toBe(3);
     expect(inferVolumeHint("Something Volume 4")).toBe(4);
+  });
+
+  test("parses Hardcover packed year ranges", () => {
+    const range = parseYearRange("All The Young Dudes - Volume Two: Years 5 - 7");
+    expect(range).toEqual({ from: 5, to: 7 });
+    expect(yearRangeContains(range!, 5)).toBe(true);
+    expect(yearRangeContains(range!, 6)).toBe(true);
+    expect(yearRangeContains(range!, 7)).toBe(true);
+    expect(yearRangeContains(range!, 2)).toBe(false);
+    expect(parseYearRange("All the Young Dudes: Year One")).toEqual({ from: 1, to: 1 });
   });
 });

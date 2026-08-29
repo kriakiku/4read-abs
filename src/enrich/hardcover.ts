@@ -3,11 +3,11 @@ import { nowIso, type Db } from "../db.ts";
 import { logger } from "../log.ts";
 import { normaliseName, similarity, normaliseTitle } from "../catalog/normalize.ts";
 import { AiMatcher } from "./ai.ts";
-import { inferVolumeHint, isMostlyLatin, parseSequenceNumber } from "./latin.ts";
+import { inferVolumeHint, isMostlyLatin, parseSequenceNumber, parseYearRange, yearRangeContains } from "./latin.ts";
 
 const log = logger("hardcover");
 
-export type HardcoverMatchKind = "book" | "series-position" | "series-cover" | "none";
+export type HardcoverMatchKind = "book" | "series-position" | "series-cover" | "volume-pack" | "none";
 
 export interface HardcoverEnrichment {
   bookId: string | null;
@@ -495,9 +495,13 @@ export class HardcoverClient {
     kind: HardcoverMatchKind,
     score: number,
   ): HardcoverEnrichment {
+    // volume-pack: keep id+slug so the UI/cover path can point at the Hardcover edition the
+    // user found (e.g. all-the-young-dudes-volume-two) without collapsing ABS folders.
+    const softLink = kind === "volume-pack";
+    const coverOnly = kind === "series-cover" || (book.compilation && !softLink);
     return {
-      bookId: kind === "series-cover" || book.compilation ? null : book.bookId,
-      slug: kind === "series-cover" || book.compilation ? null : book.slug,
+      bookId: coverOnly ? null : book.bookId,
+      slug: coverOnly ? null : book.slug,
       title: book.title,
       authorNames: book.authorNames,
       isbn: book.compilation ? null : book.isbn,
@@ -506,34 +510,36 @@ export class HardcoverClient {
       coverUrl: book.coverUrl,
       seriesId: series.seriesId,
       seriesSlug: series.slug,
-      matchKind: book.compilation && kind !== "series-cover" ? "series-cover" : kind,
+      matchKind: kind,
       score,
-      compilation: book.compilation,
+      compilation: book.compilation || softLink,
     };
   }
 
   private fromHit(hit: SearchHit, kind: HardcoverMatchKind, series?: SeriesHit | null): HardcoverEnrichment {
-    const compilation = hit.compilation;
+    const softLink = kind === "volume-pack";
+    const coverOnly = (!softLink && hit.compilation) || kind === "series-cover";
     return {
-      bookId: compilation || kind === "series-cover" ? null : hit.bookId,
-      slug: compilation || kind === "series-cover" ? null : hit.slug,
+      bookId: coverOnly ? null : hit.bookId,
+      slug: coverOnly ? null : hit.slug,
       title: hit.title,
       authorNames: hit.authorNames,
-      isbn: compilation ? null : hit.isbn,
-      asin: compilation ? null : hit.asin,
+      isbn: hit.compilation ? null : hit.isbn,
+      asin: hit.compilation ? null : hit.asin,
       releaseYear: hit.releaseYear,
       coverUrl: hit.coverUrl,
       seriesId: series?.seriesId ?? null,
       seriesSlug: series?.slug ?? null,
-      matchKind: compilation && kind === "book" ? "series-cover" : kind,
+      matchKind: hit.compilation && kind === "book" ? "volume-pack" : kind,
       score: hit.score,
-      compilation,
+      compilation: hit.compilation || softLink,
     };
   }
 
   /**
-   * When Hardcover packs several years into one "Volume N" compilation, keep each 4read
-   * listing separate: take the cover if useful, but do not claim a 1:1 book id.
+   * When Hardcover packs several years into one "Volume N" edition (e.g. Volume Two:
+   * Years 5–7), keep each 4read listing as its own ABS item. Still attach the Hardcover
+   * slug/cover when the year falls inside that pack.
    */
   private pickFromSeries(series: SeriesHit, input: EnrichmentInput): HardcoverEnrichment | null {
     if (series.books.length === 0) return null;
@@ -541,19 +547,36 @@ export class HardcoverClient {
     const nonCompilations = series.books.filter((book) => !book.compilation);
 
     if (wanted !== null) {
-      const exact = nonCompilations.find((book) => book.position !== null && Math.floor(book.position) === wanted);
+      // 1:1 year/position match on a non-compilation edition.
+      const exact = nonCompilations.find((book) => {
+        const range = parseYearRange(book.title);
+        if (range) return yearRangeContains(range, wanted) && range.from === range.to;
+        return book.position !== null && Math.floor(book.position) === wanted;
+      });
       if (exact) return this.fromSeriesBook(series, exact, "series-position", 0.92);
 
+      // Packed volume whose title explicitly covers this year ("Years 5 - 7").
+      const packed = series.books.find((book) => {
+        const range = parseYearRange(book.title);
+        return range !== null && yearRangeContains(range, wanted) && range.from !== range.to;
+      });
+      if (packed) return this.fromSeriesBook(series, packed, "volume-pack", 0.88);
+
+      // Compilation flagged by Hardcover without a parseable year range — cover only,
+      // and only if series position matches (weaker; volume# ≠ year# is common).
       const compilationAt = series.books.find(
-        (book) => book.compilation && book.position !== null && Math.floor(book.position) === wanted,
+        (book) =>
+          book.compilation &&
+          book.position !== null &&
+          Math.floor(book.position) === wanted &&
+          parseYearRange(book.title) === null,
       );
       if (compilationAt) {
-        // Position points at a packed volume — cover only, no book id merge.
-        return this.fromSeriesBook(series, compilationAt, "series-cover", 0.7);
+        return this.fromSeriesBook(series, compilationAt, "series-cover", 0.65);
       }
     }
 
-    // Series known but no safe 1:1 — still expose a cover from the first real book.
+    // Series known but no safe year mapping — still expose a cover from the first real book.
     const coverDonor = nonCompilations[0] ?? series.books[0]!;
     return this.fromSeriesBook(series, coverDonor, "series-cover", 0.55);
   }
@@ -602,10 +625,13 @@ export class HardcoverClient {
             if (hydrated?.coverUrl) fromSeries.coverUrl = hydrated.coverUrl;
           }
         }
-        // Confident position match: stop here (do not burn rate limit on Ukrainian title search).
-        if (fromSeries.matchKind === "series-position") return fromSeries;
-        // Compilation / cover-only still useful; keep going only if we still want a 1:1 book id.
-        if (fromSeries.matchKind === "series-cover" && fromSeries.compilation) return fromSeries;
+        // Confident year/position or packed-volume match: stop here.
+        if (fromSeries.matchKind === "series-position" || fromSeries.matchKind === "volume-pack") {
+          return fromSeries;
+        }
+        // Series known but no year mapping — cover from the series is still better than
+        // burning the rate limit on Ukrainian title searches.
+        if (fromSeries.matchKind === "series-cover") return fromSeries;
       }
     }
 
