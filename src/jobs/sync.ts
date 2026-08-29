@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { AppContext } from "../context.ts";
 import { logger } from "../log.ts";
-import { cachedCover, downloadCoverIfStale, type DownloadedCover } from "../covers.ts";
+import { cachedCover, downloadCoverIfStale, preferredCoverUrl, type DownloadedCover } from "../covers.ts";
 import { setMeta } from "../db.ts";
 import { getBook, type BookWithPeople } from "../catalog/store.ts";
 import {
@@ -97,7 +97,7 @@ async function syncOneItem(
     scanned: false,
   };
 
-  const coverMissing = book.cover_url !== null && !(await coverPresent(ctx, book));
+  const coverMissing = preferredCoverUrl(book, ctx.config) !== null && !(await coverPresent(ctx, book));
   if (!reconciled.changed && link?.written_hash === hash && !coverMissing) {
     return result;
   }

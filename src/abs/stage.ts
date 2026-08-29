@@ -76,7 +76,7 @@ export async function stageBook(
 
   let coverPath: string | null = null;
   if (cover) {
-    const extension = coverExtension(cover.contentType, book.cover_url);
+    const extension = coverExtension(cover.contentType, book.hardcover_cover_url ?? book.cover_url);
     coverPath = join(dir, `cover${extension}`);
     // Drop covers in other formats so the folder never holds two candidates.
     for (const candidate of [".jpg", ".jpeg", ".png", ".webp"]) {

@@ -89,6 +89,37 @@ export const configSchema = z.object({
       enabled: z.boolean().default(false),
       apiKey: z.string().default(""),
       endpoint: z.string().default("https://api.hardcover.app/v1/graphql"),
+      /** Minimum heuristic score before a Hardcover book id is accepted as 1:1. */
+      acceptScore: z.number().min(0).max(1).default(0.8),
+    })
+    .prefault({}),
+
+  covers: z
+    .object({
+      /**
+       * hardcover-first - Hardcover CDN, then 4read (Cloudflare-gated)
+       * hardcover-only  - never download covers from 4read
+       * source          - only 4read (legacy behaviour)
+       */
+      prefer: z.enum(["hardcover-first", "hardcover-only", "source"]).default("hardcover-first"),
+    })
+    .prefault({}),
+
+  ai: z
+    .object({
+      /**
+       * Optional OpenAI-compatible API for ambiguous Hardcover matches only.
+       * Recommended OpenCode Go model: mimo-v2.5 (cheapest solid chat model on the plan).
+       */
+      enabled: z.boolean().default(false),
+      apiKey: z.string().default(""),
+      baseUrl: z.string().default("https://opencode.ai/zen/go/v1"),
+      model: z.string().default("mimo-v2.5"),
+      /** Call AI only when the best heuristic score is in [minScore, maxScore). */
+      minScore: z.number().min(0).max(1).default(0.55),
+      maxScore: z.number().min(0).max(1).default(0.85),
+      maxCallsPerHour: z.number().int().min(0).default(10),
+      maxCallsPerDay: z.number().int().min(0).default(50),
     })
     .prefault({}),
 
@@ -192,9 +223,23 @@ function applyEnv(config: Config): Config {
     if (envBool("HARDCOVER_ENABLED") !== false) c.hardcover.enabled = true;
   }
 
+  const aiKey = process.env.OPENAI_API_KEY ?? process.env.OPENCODE_GO_API_KEY ?? process.env.AI_API_KEY;
+  if (aiKey) {
+    c.ai.apiKey = aiKey;
+    if (envBool("AI_ENABLED") !== false) c.ai.enabled = true;
+  }
+  c.ai.baseUrl = process.env.OPENAI_BASE_URL ?? process.env.AI_BASE_URL ?? c.ai.baseUrl;
+  c.ai.model = process.env.OPENAI_MODEL ?? process.env.AI_MODEL ?? c.ai.model;
+
+  const coverPrefer = process.env.COVERS_PREFER as Config["covers"]["prefer"] | undefined;
+  if (coverPrefer === "hardcover-first" || coverPrefer === "hardcover-only" || coverPrefer === "source") {
+    c.covers.prefer = coverPrefer;
+  }
+
   // Normalise the base URL once so URL joining is predictable everywhere else.
   c.source.baseUrl = c.source.baseUrl.replace(/\/+$/, "");
   c.audiobookshelf.url = c.audiobookshelf.url.replace(/\/+$/, "");
+  c.ai.baseUrl = c.ai.baseUrl.replace(/\/+$/, "");
   return c;
 }
 

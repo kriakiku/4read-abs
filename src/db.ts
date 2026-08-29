@@ -33,6 +33,9 @@ create table if not exists books (
   asin          text,
   hardcover_book_id text,
   hardcover_slug    text,
+  hardcover_cover_url text,
+  hardcover_series_id text,
+  hardcover_match_kind text,
   detail_state  text    not null default 'pending',
   detail_error  text
 );
@@ -120,6 +123,12 @@ create table if not exists hardcover_cache (
   fetched_at text not null
 );
 
+create table if not exists ai_cache (
+  query_key  text primary key,
+  response   text not null,
+  fetched_at text not null
+);
+
 create table if not exists fetch_log (
   id integer primary key autoincrement,
   at        text not null,
@@ -136,6 +145,12 @@ create index if not exists fetch_log_at_idx on fetch_log(at);
 
 export type Db = Database;
 
+function ensureColumn(db: Database, table: string, column: string, ddl: string): void {
+  const rows = db.query<{ name: string }, []>(`pragma table_info(${table})`).all();
+  if (rows.some((row) => row.name === column)) return;
+  db.run(`alter table ${table} add column ${ddl}`);
+}
+
 export function openDb(dataDir: string): Db {
   const dir = resolve(dataDir);
   mkdirSync(dir, { recursive: true });
@@ -144,6 +159,10 @@ export function openDb(dataDir: string): Db {
   db.run("pragma foreign_keys = ON");
   db.run("pragma busy_timeout = 5000");
   db.run(SCHEMA);
+  // Existing installs created books before these enrichment columns existed.
+  ensureColumn(db, "books", "hardcover_cover_url", "hardcover_cover_url text");
+  ensureColumn(db, "books", "hardcover_series_id", "hardcover_series_id text");
+  ensureColumn(db, "books", "hardcover_match_kind", "hardcover_match_kind text");
   return db;
 }
 

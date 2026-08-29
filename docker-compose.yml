@@ -16,6 +16,9 @@ services:
       ABS_URL: ${ABS_URL:-}
       ABS_API_KEY: ${ABS_API_KEY:-}
       HARDCOVER_API_KEY: ${HARDCOVER_API_KEY:-}
+      # Optional: OpenCode Go / OpenAI-compatible key for ambiguous matches only.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      COVERS_PREFER: ${COVERS_PREFER:-hardcover-first}
       ABS_LIBRARY_DIR: /library
       LOG_LEVEL: info
     volumes:
