@@ -103,6 +103,21 @@ export class Scheduler {
         log.warn(`library sync failed: ${String(error)}`);
         return null;
       });
+    } else if (ctx.abs.configured && ctx.config.paths.absLibrary) {
+      // Accepted books must not wait for syncMinutes — retry prepare every tick.
+      const pending =
+        ctx.db
+          .query<{ n: number }, []>(
+            "select count(*) as n from queue where state in ('accepted', 'prepared')",
+          )
+          .get()?.n ?? 0;
+      if (pending > 0 && minutesSince(getMeta(ctx.db, "sync_ran_at")) >= 1) {
+        log.info(`due: prepare ${pending} accepted/prepared book(s)`);
+        await ctx.runJob("sync", () => syncLibrary(ctx)).catch((error) => {
+          log.warn(`library sync failed: ${String(error)}`);
+          return null;
+        });
+      }
     }
 
     if (minutesSince(getMeta(ctx.db, "pruned_at")) >= 60 * 24) {

@@ -484,9 +484,9 @@
             const button = document.createElement("button");
             button.textContent = "Delete";
             button.className = "danger";
-            button.title = "Remove from queue and clear local audio so it can be re-queued and re-downloaded";
+            button.title = "Remove from queue and wipe local staging (audio, cover, metadata) so Accept can re-download";
             button.addEventListener("click", async () => {
-              if (!confirm(`Delete #${entry.source_id} from the queue?\nLocal audio cache will be cleared so the next sync can re-download.`)) {
+              if (!confirm(`Delete #${entry.source_id} from the queue?\nLocal staging (audio + cover preview) will be wiped so Accept can re-download.`)) {
                 return;
               }
               button.disabled = true;

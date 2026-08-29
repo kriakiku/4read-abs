@@ -46,8 +46,13 @@ async function ensureCover(ctx: AppContext, book: BookWithPeople): Promise<Downl
 async function ensureAudio(ctx: AppContext, book: BookWithPeople): Promise<number> {
   try {
     const dir = stagingDirFor(book, ctx.config);
+    log.info(`audio: ensuring tracks for ${book.source_id} in ${dir}`);
     const result = await ensureAudioFromPlaylist(book, dir, ctx.config, ctx.fetcher);
-    return result?.files.length ?? 0;
+    const count = result?.files.length ?? 0;
+    if (count === 0) {
+      log.warn(`audio: no files ready for ${book.source_id} (${book.slug})`);
+    }
+    return count;
   } catch (error) {
     log.warn(`audio fetch failed for ${book.source_id}: ${String(error)}`);
     return 0;
@@ -205,12 +210,22 @@ export async function syncLibrary(ctx: AppContext): Promise<SyncResult> {
     }
   }
 
-  if (ctx.config.sync.createFolders) {
+  if (ctx.config.paths.absLibrary) {
     result.created = await createPendingFolders(ctx, result);
-  } else if (result.items === 0) {
-    log.info(
-      "sync: ABS library is empty and sync.createFolders is off — accept queue entries and enable createFolders to build folders",
-    );
+  } else {
+    const pending =
+      ctx.db
+        .query<{ n: number }, []>(
+          "select count(*) as n from queue where state in ('accepted', 'prepared')",
+        )
+        .get()?.n ?? 0;
+    if (pending > 0) {
+      log.warn(
+        `sync: ${pending} accepted/prepared book(s) but paths.absLibrary is empty — set ABS_LIBRARY_DIR / paths.absLibrary`,
+      );
+    } else if (result.items === 0) {
+      log.info("sync: ABS library empty and paths.absLibrary unset — Accept needs absLibrary to create folders");
+    }
   }
 
   setMeta(ctx.db, "sync_ran_at", new Date().toISOString());
@@ -227,7 +242,7 @@ export async function syncLibrary(ctx: AppContext): Promise<SyncResult> {
 async function createPendingFolders(ctx: AppContext, result: SyncResult): Promise<number> {
   const libraryRoot = ctx.config.paths.absLibrary;
   if (!libraryRoot) {
-    result.errors.push("sync.createFolders is on but paths.absLibrary is empty");
+    result.errors.push("paths.absLibrary is empty");
     return 0;
   }
 
@@ -244,50 +259,19 @@ async function createPendingFolders(ctx: AppContext, result: SyncResult): Promis
     const news =
       ctx.db.query<{ n: number }, []>("select count(*) as n from queue where state = 'new'").get()?.n ?? 0;
     log.info(
-      `createFolders: no accepted/prepared entries` +
+      `prepare: no accepted/prepared entries` +
         (news > 0 ? ` (${news} still in state=new — accept them in the UI)` : ""),
     );
     return 0;
   }
 
   for (const row of rows) {
-    const book = getBook(ctx.db, row.source_id);
-    if (!book || book.detail_state !== "ok") continue;
-    if (getLinkBySource(ctx.db, row.source_id)) continue;
-
     try {
-      if (row.state === "prepared") {
-        const targetDir = row.note?.trim() || resolve(libraryRoot, targetFolderFor(book, ctx.config));
-        if (await folderHasMedia(targetDir)) continue;
-
-        log.info(`backfilling audio for prepared book ${book.source_id} (${book.slug})`);
-        const sidecar: Sidecar = buildSidecar(book, ctx.config);
-        const cover = await ensureCover(ctx, book);
-        const audioCount = await ensureAudio(ctx, book);
-        const staged = await stageBook(book, sidecar, cover, ctx.config);
-        if (audioCount === 0 && staged.mediaFiles.length === 0) continue;
-
-        const placement = await placeIntoLibrary(staged, targetDir, "full", ctx.config);
-        if (placement.errors.length > 0) {
-          result.errors.push(`${row.source_id}: ${placement.errors.join("; ")}`);
-          continue;
-        }
-        created += 1;
-        continue;
+      const outcome = await prepareAcceptedBook(ctx, row.source_id);
+      if (outcome.created) created += 1;
+      if (outcome.error && !outcome.ok) {
+        result.errors.push(`${row.source_id}: ${outcome.error}`);
       }
-
-      const sidecar: Sidecar = buildSidecar(book, ctx.config);
-      const cover = await ensureCover(ctx, book);
-      await ensureAudio(ctx, book);
-      const staged = await stageBook(book, sidecar, cover, ctx.config);
-      const targetDir = resolve(libraryRoot, targetFolderFor(book, ctx.config));
-      const placement = await placeIntoLibrary(staged, targetDir, "full", ctx.config);
-      if (placement.errors.length > 0) {
-        result.errors.push(`${row.source_id}: ${placement.errors.join("; ")}`);
-        continue;
-      }
-      setQueueState(ctx, row.source_id, "prepared", targetDir);
-      created += 1;
     } catch (error) {
       result.errors.push(`${row.source_id}: ${String(error)}`);
     }
@@ -305,4 +289,94 @@ async function createPendingFolders(ctx: AppContext, result: SyncResult): Promis
   }
 
   return created;
+}
+
+export interface PrepareOutcome {
+  ok: boolean;
+  created: boolean;
+  audioFiles: number;
+  targetDir?: string;
+  error?: string;
+}
+
+/**
+ * Accept path: build the library folder and download audio now.
+ * Does not wait for a separate sync job or UI button.
+ */
+export async function prepareAcceptedBook(ctx: AppContext, sourceId: number): Promise<PrepareOutcome> {
+  const libraryRoot = ctx.config.paths.absLibrary;
+  if (!libraryRoot) {
+    const message = "paths.absLibrary is empty — set ABS_LIBRARY_DIR or paths.absLibrary in config";
+    log.warn(`prepare ${sourceId}: ${message}`);
+    return { ok: false, created: false, audioFiles: 0, error: message };
+  }
+
+  const row = ctx.db
+    .query<{ source_id: number; state: string; note: string | null }, [number]>(
+      "select source_id, state, note from queue where source_id = ?",
+    )
+    .get(sourceId);
+
+  const book = getBook(ctx.db, sourceId);
+  if (!book) {
+    return { ok: false, created: false, audioFiles: 0, error: "book not found" };
+  }
+  if (book.detail_state !== "ok") {
+    const message = `detail not ready (${book.detail_state}) — wait for Fetch details / backfill`;
+    log.info(`prepare ${sourceId}: ${message}`);
+    return { ok: true, created: false, audioFiles: 0, error: message };
+  }
+  if (getLinkBySource(ctx.db, sourceId)) {
+    log.info(`prepare ${sourceId}: already linked in ABS — library sync will refresh media`);
+    return { ok: true, created: false, audioFiles: 0 };
+  }
+
+  const state = row?.state ?? "accepted";
+  log.info(`prepare: starting ${sourceId} (${book.slug}) state=${state}`);
+
+  if (state === "prepared") {
+    const targetDir = row?.note?.trim() || resolve(libraryRoot, targetFolderFor(book, ctx.config));
+    if (await folderHasMedia(targetDir)) {
+      log.info(`prepare ${sourceId}: library folder already has media`);
+      return { ok: true, created: false, audioFiles: 0, targetDir };
+    }
+
+    log.info(`backfilling audio for prepared book ${sourceId} (${book.slug})`);
+    const sidecar: Sidecar = buildSidecar(book, ctx.config);
+    const cover = await ensureCover(ctx, book);
+    const audioCount = await ensureAudio(ctx, book);
+    const staged = await stageBook(book, sidecar, cover, ctx.config);
+    if (audioCount === 0 && staged.mediaFiles.length === 0) {
+      return {
+        ok: false,
+        created: false,
+        audioFiles: 0,
+        targetDir,
+        error: "playlist empty or audio download failed",
+      };
+    }
+
+    const placement = await placeIntoLibrary(staged, targetDir, "full", ctx.config);
+    if (placement.errors.length > 0) {
+      return { ok: false, created: false, audioFiles: audioCount, targetDir, error: placement.errors.join("; ") };
+    }
+    log.info(`prepare ${sourceId}: placed ${audioCount} audio file(s) into ${targetDir}`);
+    return { ok: true, created: true, audioFiles: audioCount, targetDir };
+  }
+
+  const sidecar: Sidecar = buildSidecar(book, ctx.config);
+  const cover = await ensureCover(ctx, book);
+  const audioCount = await ensureAudio(ctx, book);
+  const staged = await stageBook(book, sidecar, cover, ctx.config);
+  const targetDir = resolve(libraryRoot, targetFolderFor(book, ctx.config));
+  const placement = await placeIntoLibrary(staged, targetDir, "full", ctx.config);
+  if (placement.errors.length > 0) {
+    return { ok: false, created: false, audioFiles: audioCount, targetDir, error: placement.errors.join("; ") };
+  }
+  setQueueState(ctx, sourceId, "prepared", targetDir);
+  log.info(
+    `prepare ${sourceId}: created folder ${targetDir} with ${audioCount} audio file(s)` +
+      (audioCount === 0 ? " (metadata/cover only — audio failed or empty playlist)" : ""),
+  );
+  return { ok: true, created: true, audioFiles: audioCount, targetDir };
 }

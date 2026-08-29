@@ -63,6 +63,12 @@ describe("configuration", () => {
     expect(config.sync.tagPrefix).toBe("4read");
   });
 
+  test("legacy createFolders key in yaml is ignored", () => {
+    const config = parseConfigText("sync:\n  createFolders: false\n  writePolicy: overwrite-all\n");
+    expect(config.sync.writePolicy).toBe("overwrite-all");
+    expect((config.sync as { createFolders?: boolean }).createFolders).toBeUndefined();
+  });
+
   test("subscriptions default to enabled", () => {
     const config = parseConfigText("subscriptions:\n  - type: series\n    value: dune\n");
     expect(config.subscriptions[0]).toEqual({ type: "series", value: "dune", enabled: true });

@@ -6,7 +6,7 @@ import { booksForSubscription, getBook, type BookWithPeople } from "../catalog/s
 import { coverProxyUrl } from "../covers.ts";
 import { getLinkBySource, removeLinkBySource } from "../abs/matcher.ts";
 import { stagingDirFor } from "../abs/stage.ts";
-import { clearDownloadedAudio } from "../audio/m3u.ts";
+import { clearBookFolder } from "../audio/m3u.ts";
 import { crawlFacet } from "./crawl.ts";
 
 const log = logger("subs");
@@ -166,13 +166,14 @@ export function setQueueState(ctx: AppContext, sourceId: number, state: string, 
 }
 
 /**
- * Remove a queue entry so "Check subscriptions" can enqueue it again, and clear local
- * audio caches so the next accept/sync re-downloads media. Metadata/covers stay.
+ * Remove a queue entry so "Check subscriptions" can enqueue it again, and wipe local
+ * staging / prepared folders (audio, cover preview, metadata) so Accept starts clean.
+ * Catalogue description stays in the DB — that is shared book data, not queue state.
  */
 export async function deleteQueueEntry(
   ctx: AppContext,
   sourceId: number,
-): Promise<{ ok: boolean; clearedAudio: number }> {
+): Promise<{ ok: boolean; clearedAudio: number; wipedStaging: boolean }> {
   const existing = ctx.db
     .query<QueueRow, [number]>("select * from queue where source_id = ?")
     .get(sourceId);
@@ -181,17 +182,23 @@ export async function deleteQueueEntry(
   removeLinkBySource(ctx.db, sourceId);
 
   let clearedAudio = 0;
+  let wipedStaging = false;
   const book = getBook(ctx.db, sourceId);
   if (book) {
-    clearedAudio += await clearDownloadedAudio(stagingDirFor(book, ctx.config));
+    const staging = await clearBookFolder(stagingDirFor(book, ctx.config));
+    clearedAudio += staging.audio;
+    wipedStaging = staging.wiped;
   }
   const preparedDir = existing?.note?.trim();
   if (preparedDir) {
-    clearedAudio += await clearDownloadedAudio(preparedDir);
+    const prepared = await clearBookFolder(preparedDir);
+    clearedAudio += prepared.audio;
   }
 
-  log.info(`deleted queue entry ${sourceId} (cleared ${clearedAudio} audio file(s))`);
-  return { ok: true, clearedAudio };
+  log.info(
+    `deleted queue entry ${sourceId} (cleared ${clearedAudio} audio file(s), wipedStaging=${wipedStaging})`,
+  );
+  return { ok: true, clearedAudio, wipedStaging };
 }
 
 export function queueCounts(ctx: AppContext): Record<string, number> {

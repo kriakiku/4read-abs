@@ -127,7 +127,7 @@ export const configSchema = z.object({
     .object({
       /**
        * Timeouts and size floor for `{source.baseUrl}/m33u2/{slug}.m3u` track downloads
-       * during sync / createFolders.
+       * when Accept prepares a book / during library sync.
        */
       playlistTimeoutMs: z.number().int().min(1000).default(30_000),
       trackTimeoutMs: z.number().int().min(1000).default(120_000),
@@ -143,8 +143,6 @@ export const configSchema = z.object({
        * overwrite-all  - always write our values
        */
       writePolicy: z.enum(["fill-empty", "overwrite-ours", "overwrite-all"]).default("overwrite-ours"),
-      /** Create a folder in the library for books that are not there yet. */
-      createFolders: z.boolean().default(false),
       folderTemplate: z.string().default("{author}/{series}/{title}"),
       /** Media files are linked; small metadata files are always copied. */
       linkMode: z.enum(["hardlink", "copy"]).default("hardlink"),

@@ -16,7 +16,7 @@ paths:
   data: ./data
   # Books are assembled here first, then linked/copied into the library.
   staging: ./staging
-  # The Audiobookshelf library as this process sees it. Required for createFolders.
+  # The Audiobookshelf library as this process sees it. Required so Accept can create folders.
   absLibrary: ""
 
 source:
@@ -90,9 +90,7 @@ sync:
   # overwrite-ours - replace what we wrote before, keep manual edits (default)
   # overwrite-all  - always write our values
   writePolicy: overwrite-ours
-  # Create a folder with metadata and cover for accepted books that are not in the
-  # library yet, so audio can be dropped in later.
-  createFolders: false
+  # Accept creates a folder with metadata, cover, and audio for books not in the library yet.
   folderTemplate: "{author}/{series}/{title}"
   # Media files are hardlinked; metadata files are always copied.
   linkMode: hardlink

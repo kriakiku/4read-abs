@@ -6,7 +6,7 @@ import { AppContext } from "../src/context.ts";
 import { catalogCounts, getBook, booksForSubscription } from "../src/catalog/store.ts";
 import { backfillDetails, fetchBookDetail, seedEntities, syncSitemap } from "../src/jobs/crawl.ts";
 import { listQueue, refreshQueue, setQueueState } from "../src/jobs/subscriptions.ts";
-import { syncLibrary } from "../src/jobs/sync.ts";
+import { prepareAcceptedBook, syncLibrary } from "../src/jobs/sync.ts";
 import { createApp } from "../src/web/server.ts";
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}`, import.meta.url)).text();
@@ -425,16 +425,17 @@ describe("audiobookshelf sync", () => {
     expect(result.unmatched).toBe(1);
   });
 
-  test("createFolders prepares a folder for an accepted book", async () => {
-    const fake = await buildFake();
+  test("accept prepares a folder and downloads audio", async () => {
+    const fake = await buildFake({ absItems: [] });
     await syncSitemap(fake.ctx);
     await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
     setQueueState(fake.ctx, 6840, "accepted");
 
-    fake.ctx.config.sync.createFolders = true;
-    const result = await syncLibrary(fake.ctx);
-    expect(result.created).toBe(1);
+    const outcome = await prepareAcceptedBook(fake.ctx, 6840);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.created).toBe(true);
+    expect(outcome.audioFiles).toBeGreaterThan(0);
 
     // The colon is dropped: folder segments have to be safe on every filesystem.
     const folder = join(
@@ -469,7 +470,6 @@ describe("audiobookshelf sync", () => {
     await writeFile(join(folder, "cover.jpg"), "cover");
     setQueueState(fake.ctx, 6840, "prepared", folder);
 
-    fake.ctx.config.sync.createFolders = true;
     const result = await syncLibrary(fake.ctx);
     expect(result.created).toBe(1);
     expect((await readdir(folder)).filter((name) => name.endsWith(".mp3"))).toEqual(["0001-track.mp3"]);
@@ -522,6 +522,37 @@ describe("http api", () => {
     expect(fake.ctx.config.subscriptions).toHaveLength(2);
   });
 
+  test("queue accept starts a download job", async () => {
+    const fake = await buildFake({ absItems: [] });
+    await syncSitemap(fake.ctx);
+    await fetchTestDetails(fake.ctx);
+    await refreshQueue(fake.ctx);
+    const app = createApp(fake.ctx);
+
+    const accept = await app.request("/api/queue/6840/accept", { method: "POST" });
+    expect(accept.status).toBe(200);
+    const body = (await accept.json()) as { ok: boolean; state: string; downloadStarted: boolean };
+    expect(body.state).toBe("accepted");
+    expect(body.downloadStarted).toBe(true);
+
+    // Wait for the background prepare job.
+    for (let i = 0; i < 50; i += 1) {
+      const status = fake.ctx.jobStatus("prepare-6840");
+      if (status.finishedAt) break;
+      await Bun.sleep(50);
+    }
+    expect(fake.ctx.jobStatus("prepare-6840").lastError).toBeNull();
+
+    const folder = join(
+      fake.dir,
+      "library",
+      "MsKingBean89",
+      "All the Young Dudes",
+      "1 - Всі молоді чуваки Перший рік",
+    );
+    expect((await readdir(folder)).filter((name) => name.endsWith(".mp3"))).toEqual(["0001-track.mp3"]);
+  });
+
   test("queue actions are exposed over http", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
@@ -529,33 +560,48 @@ describe("http api", () => {
     await refreshQueue(fake.ctx);
     const app = createApp(fake.ctx);
 
-    const accept = await app.request("/api/queue/3130/accept", { method: "POST" });
-    expect(accept.status).toBe(200);
+    const ignore = await app.request("/api/queue/3130/ignore", { method: "POST" });
+    expect(ignore.status).toBe(200);
+    const ignoreBody = (await ignore.json()) as { ok: boolean; state: string; downloadStarted?: boolean };
+    expect(ignoreBody.state).toBe("ignored");
+    expect(ignoreBody.downloadStarted).toBeFalsy();
 
-    const listed = (await (await app.request("/api/queue?state=accepted")).json()) as { entries: unknown[] };
+    const listed = (await (await app.request("/api/queue?state=ignored")).json()) as { entries: unknown[] };
     expect(listed.entries).toHaveLength(1);
 
     const bad = await app.request("/api/queue/3130/explode", { method: "POST" });
     expect(bad.status).toBe(400);
   });
 
-  test("deleting a queue entry allows it to be re-queued", async () => {
+  test("deleting a queue entry wipes staging and allows re-queue", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);
     await fetchTestDetails(fake.ctx);
     await refreshQueue(fake.ctx);
     const app = createApp(fake.ctx);
 
-    setQueueState(fake.ctx, 3130, "prepared", join(fake.dir, "library", "prepared-book"));
-    await mkdir(join(fake.dir, "library", "prepared-book"), { recursive: true });
-    await writeFile(join(fake.dir, "library", "prepared-book", "0001-track.mp3"), "x".repeat(2048));
-    await writeFile(join(fake.dir, "library", "prepared-book", ".4read-audio-playlist"), "http://x/a.m3u");
+    const prepared = join(fake.dir, "library", "prepared-book");
+    setQueueState(fake.ctx, 3130, "prepared", prepared);
+    await mkdir(prepared, { recursive: true });
+    await writeFile(join(prepared, "0001-track.mp3"), "x".repeat(2048));
+    await writeFile(join(prepared, ".4read-audio-playlist"), "http://x/a.m3u");
+    await writeFile(join(prepared, "metadata.json"), "{}");
+    await writeFile(join(prepared, "cover.jpg"), "cover");
+
+    const staging = join(fake.dir, "staging", "3130-yudkovski-elizer-garri-potter-i-metody-racionalnosty-t-2");
+    await mkdir(staging, { recursive: true });
+    await writeFile(join(staging, "cover.jpg"), "preview");
+    await writeFile(join(staging, "metadata.json"), "{}");
 
     const del = await app.request("/api/queue/3130", { method: "DELETE" });
     expect(del.status).toBe(200);
-    const body = (await del.json()) as { ok: boolean; clearedAudio: number };
+    const body = (await del.json()) as { ok: boolean; clearedAudio: number; wipedStaging: boolean };
     expect(body.ok).toBe(true);
     expect(body.clearedAudio).toBeGreaterThan(0);
+    expect(body.wipedStaging).toBe(true);
+
+    await expect(readdir(staging)).rejects.toThrow();
+    await expect(readdir(prepared)).rejects.toThrow();
 
     const gone = (await (await app.request("/api/queue?state=all")).json()) as {
       entries: Array<{ source_id: number }>;

@@ -126,7 +126,7 @@ async function fileLooksComplete(path: string, minBytes: number): Promise<boolea
 }
 
 /**
- * Drop playlist marker and media files so the next sync re-fetches audio.
+ * Drop playlist marker and media files so the next accept/download re-fetches audio.
  * Leaves metadata.json / cover.* alone.
  */
 export async function clearDownloadedAudio(dir: string): Promise<number> {
@@ -150,6 +150,21 @@ export async function clearDownloadedAudio(dir: string): Promise<number> {
 }
 
 /**
+ * Wipe a book working folder (audio, cover, metadata, marker) so Delete → re-Accept
+ * starts clean — including the UI cover preview cache.
+ */
+export async function clearBookFolder(dir: string): Promise<{ audio: number; wiped: boolean }> {
+  const audio = await clearDownloadedAudio(dir);
+  try {
+    await rm(dir, { recursive: true, force: true });
+    log.info(`wiped book folder ${dir}`);
+    return { audio, wiped: true };
+  } catch {
+    return { audio, wiped: false };
+  }
+}
+
+/**
  * Fetch `{source.baseUrl}/m33u2/{slug}.m3u` and download each listed media file into `dir`
  * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
  * Uses the shared Fetcher (direct → FlareSolverr Chrome) so challenged hosts still work.
@@ -162,7 +177,12 @@ export async function ensureAudioFromPlaylist(
   fetcher: Fetcher,
 ): Promise<AudioFetchResult | null> {
   const playlistUrl = playlistUrlFor(book, config);
-  if (!playlistUrl) return null;
+  if (!playlistUrl) {
+    log.warn(`audio skipped for ${book.source_id}: book has no slug`);
+    return null;
+  }
+
+  log.info(`audio: fetching playlist for ${book.source_id} (${book.slug}) → ${playlistUrl}`);
 
   const markerPath = join(dir, PLAYLIST_MARKER);
   try {

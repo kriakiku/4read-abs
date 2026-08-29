@@ -182,9 +182,9 @@ cp config.example.yaml config.yaml
 - **`metadata.json` і обкладинка завжди копіюються.** ABS перезаписує `metadata.json`
   на місці при ручному редагуванні; hardlink зіпсував би staging-копію.
 
-З увімкненим `sync.createFolders` прийняті з черги книги, яких ще немає в бібліотеці,
-отримують теку за `sync.folderTemplate` уже з метаданими й обкладинкою — аудіо можна
-додати пізніше.
+Прийняті з черги книги, яких ще немає в бібліотеці, одразу (по Accept) отримують
+теку за `sync.folderTemplate` з метаданими, обкладинкою й аудіо з плейлиста.
+Потрібен `paths.absLibrary` (або `ABS_LIBRARY_DIR`).
 
 ### Обкладинки в UI
 
@@ -343,8 +343,8 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Аудіо з плейлистів 4read
 
-Під час `sync` / `createFolders` для кожної книги з `slug` виконується запит до
-базового домену джерела (`source.baseUrl`, зазвичай `https://4read.org`):
+Після **Accept** (і при наступному library sync) для кожної книги з `slug` виконується
+запит до базового домену джерела (`source.baseUrl`, зазвичай `https://4read.org`):
 
 ```
 GET {source.baseUrl}/m33u2/{slug}.m3u

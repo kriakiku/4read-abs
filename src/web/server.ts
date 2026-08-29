@@ -12,7 +12,7 @@ import { getMeta } from "../db.ts";
 import { recentLogs } from "../log.ts";
 import { backfillDetails, seedEntities, syncSitemap } from "../jobs/crawl.ts";
 import { listQueue, queueCounts, refreshQueue, setQueueState, deleteQueueEntry } from "../jobs/subscriptions.ts";
-import { syncLibrary } from "../jobs/sync.ts";
+import { prepareAcceptedBook, syncLibrary } from "../jobs/sync.ts";
 import { logger } from "../log.ts";
 
 const log = logger("web");
@@ -117,7 +117,18 @@ export function createApp(ctx: AppContext): Hono {
     const state = states[action];
     if (!state) return c.json({ error: `unknown action ${action}` }, 400);
     setQueueState(ctx, sourceId, state);
-    return c.json({ ok: true, state });
+
+    // Accept starts folder + audio download immediately — no separate Sync step.
+    let downloadStarted = false;
+    if (action === "accept") {
+      downloadStarted = true;
+      const jobName = `prepare-${sourceId}`;
+      void ctx
+        .runJob(jobName, () => prepareAcceptedBook(ctx, sourceId))
+        .catch((error) => log.warn(`prepare ${sourceId} failed: ${String(error)}`));
+    }
+
+    return c.json({ ok: true, state, downloadStarted });
   });
 
   app.delete("/api/queue/:sourceId", async (c) => {
