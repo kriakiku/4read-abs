@@ -568,17 +568,6 @@ describe("http api", () => {
     expect(restored.some((entry) => entry.source_id === 3130)).toBe(true);
   });
 
-  test("search finds catalogue entries for manual linking", async () => {
-    const fake = await buildFake();
-    await syncSitemap(fake.ctx);
-    await fetchTestDetails(fake.ctx);
-    const app = createApp(fake.ctx);
-
-    const response = await app.request("/api/search?q=молоді");
-    const body = (await response.json()) as { results: Array<{ source_id: number }> };
-    expect(body.results.map((entry) => entry.source_id)).toContain(6840);
-  });
-
   test("covers are served from our own cache, not from the source", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);

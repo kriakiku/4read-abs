@@ -189,19 +189,6 @@
       /* A cover that is not cached yet should read as an empty slot, not a broken image. */
       .cover--missing { visibility: hidden; }
       .item-grid { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: start; }
-      select,
-      input[type="search"] {
-        font: inherit;
-        background: var(--panel-2);
-        color: var(--text);
-        border: 1px solid var(--border);
-        border-radius: 7px;
-        padding: 6px 10px;
-      }
-      select { max-width: 420px; }
-      input[type="search"] { min-width: 200px; }
-      select:focus,
-      input[type="search"]:focus { outline: none; border-color: var(--accent); }
       .tabs { display: flex; gap: 6px; }
       .tabs button.active { border-color: var(--accent); color: var(--accent); }
     </style>
@@ -245,14 +232,6 @@
           </span>
         </h2>
         <div class="body"><div class="list" id="queue-list"></div></div>
-      </section>
-
-      <section>
-        <h2>
-          Unmatched ABS books
-          <button id="btn-unmatched">Load</button>
-        </h2>
-        <div class="body"><div class="list" id="unmatched-list"><span class="empty">Click Load.</span></div></div>
       </section>
 
       <section>
@@ -528,137 +507,6 @@
         }
       }
 
-      async function loadUnmatched() {
-        const list = $("unmatched-list");
-        list.replaceChildren();
-        const loading = document.createElement("span");
-        loading.className = "empty";
-        loading.textContent = "Loading…";
-        list.append(loading);
-
-        let data;
-        try {
-          data = await api("/api/unmatched");
-        } catch (error) {
-          loading.className = "msg err";
-          loading.textContent = String(error);
-          return;
-        }
-
-        list.replaceChildren();
-        if (data.items.length === 0) {
-          const empty = document.createElement("span");
-          empty.className = "empty";
-          empty.textContent = "Every book is matched.";
-          list.append(empty);
-          return;
-        }
-
-        for (const entry of data.items) {
-          const item = document.createElement("div");
-          item.className = "item";
-
-          const title = document.createElement("div");
-          title.className = "title";
-          title.textContent = entry.title || entry.itemId;
-          item.append(title);
-
-          const meta = document.createElement("div");
-          meta.className = "meta";
-          for (const text of [entry.authors.join(", ") || "no author", entry.path]) {
-            const span = document.createElement("span");
-            span.textContent = text;
-            meta.append(span);
-          }
-          item.append(meta);
-
-          const row = document.createElement("div");
-          row.className = "row";
-
-          const select = document.createElement("select");
-          const fill = (options, labelFor) => {
-            select.replaceChildren();
-            for (const candidate of options) {
-              const option = document.createElement("option");
-              option.value = String(candidate.sourceId ?? candidate.source_id);
-              option.textContent = labelFor(candidate);
-              select.append(option);
-            }
-          };
-          fill(entry.candidates, (c) => `${c.title} — ${c.authors.join(", ")} (${c.score})`);
-          row.append(select);
-
-          // Fuzzy matching often finds nothing for a renamed folder, so allow a catalogue
-          // search to pick the right book by hand.
-          const search = document.createElement("input");
-          search.type = "search";
-          search.placeholder = "Search catalogue…";
-          search.value = entry.title ?? "";
-          const runSearch = async () => {
-            const query = search.value.trim();
-            if (query.length < 2) return;
-            try {
-              const found = await api(`/api/search?q=${encodeURIComponent(query)}`);
-              if (found.results.length === 0) {
-                fill([], () => "");
-                const option = document.createElement("option");
-                option.textContent = "Nothing found";
-                option.disabled = true;
-                select.append(option);
-                return;
-              }
-              fill(found.results, (c) => `${c.title} — ${c.authors.join(", ")}`);
-            } catch (error) {
-              alert(String(error));
-            }
-          };
-          search.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") void runSearch();
-          });
-          row.append(search);
-
-          const searchButton = document.createElement("button");
-          searchButton.textContent = "Search";
-          searchButton.addEventListener("click", () => void runSearch());
-          row.append(searchButton);
-
-          const link = document.createElement("button");
-          link.textContent = "Link and write";
-          link.className = "primary";
-          link.addEventListener("click", async () => {
-            const chosen = Number(select.value);
-            if (!Number.isFinite(chosen) || !select.value) {
-              alert("Pick a book first");
-              return;
-            }
-            link.disabled = true;
-            try {
-              await api("/api/link", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ sourceId: chosen, itemId: entry.itemId }),
-              });
-              item.remove();
-              await loadStatus();
-            } catch (error) {
-              alert(String(error));
-              link.disabled = false;
-            }
-          });
-          row.append(link);
-
-          if (entry.candidates.length === 0) {
-            const hint = document.createElement("span");
-            hint.className = "empty";
-            hint.textContent = "No automatic candidates — use search";
-            row.append(hint);
-          }
-
-          item.append(row);
-          list.append(item);
-        }
-      }
-
       async function loadConfig() {
         const data = await api("/api/config");
         setConfigText(data.text);
@@ -834,8 +682,6 @@
           button.disabled = false;
         }
       });
-
-      $("btn-unmatched").addEventListener("click", () => void loadUnmatched());
 
       for (const button of document.querySelectorAll("button[data-job]")) {
         button.addEventListener("click", async () => {
