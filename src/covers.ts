@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { BookWithPeople } from "./catalog/store.ts";
@@ -21,6 +21,8 @@ const CONTENT_TYPES: Record<string, string> = {
 export interface CachedCover {
   path: string;
   contentType: string;
+  /** Weak cache-buster derived from the file's mtime and size. */
+  version: string;
 }
 
 /** The cover already downloaded into this book's staging folder, if any. */
@@ -28,11 +30,28 @@ export async function cachedCover(book: BookWithPeople, config: Config): Promise
   const dir = stagingDirFor(book, config);
   for (const extension of EXTENSIONS) {
     const path = join(dir, `cover${extension}`);
-    if (await Bun.file(path).exists()) {
-      return { path, contentType: CONTENT_TYPES[extension] ?? "application/octet-stream" };
+    try {
+      const info = await stat(path);
+      if (!info.isFile() || info.size < 64) continue;
+      return {
+        path,
+        contentType: CONTENT_TYPES[extension] ?? "application/octet-stream",
+        version: `${Math.floor(info.mtimeMs)}-${info.size}`,
+      };
+    } catch {
+      // Try the next extension.
     }
   }
   return null;
+}
+
+/** Browser-facing URL that changes when the cached file changes, so stale covers are not stuck. */
+export async function coverProxyUrl(book: BookWithPeople, config: Config): Promise<string | null> {
+  if (!book.cover_url) return null;
+  const cached = await cachedCover(book, config);
+  if (cached) return `/api/covers/${book.source_id}?v=${cached.version}`;
+  // No file yet: still point at the endpoint so a later refresh can pick it up.
+  return `/api/covers/${book.source_id}`;
 }
 
 export interface DownloadedCover {
@@ -55,7 +74,7 @@ export async function downloadCoverIfStale(
 
   try {
     const marker = await readFile(markerPath, "utf8");
-    if (marker.trim() === book.cover_url) return null;
+    if (marker.trim() === book.cover_url && (await cachedCover(book, config))) return null;
   } catch {
     // No marker yet, so this cover has not been fetched.
   }
@@ -92,4 +111,3 @@ export function cacheCoverInBackground(
     }
   })();
 }
-

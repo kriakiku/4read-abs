@@ -3,6 +3,7 @@ import { nowIso } from "../db.ts";
 import { logger } from "../log.ts";
 import { groupByWork, type WorkGroup } from "../catalog/select.ts";
 import { booksForSubscription, getBook, type BookWithPeople } from "../catalog/store.ts";
+import { coverProxyUrl } from "../covers.ts";
 import { getLinkBySource } from "../abs/matcher.ts";
 import { crawlFacet } from "./crawl.ts";
 
@@ -21,6 +22,8 @@ export interface QueueRow {
 export interface QueueEntry extends QueueRow {
   book: BookWithPeople | null;
   linkedItemId: string | null;
+  /** Local cover URL with a version query so browsers do not keep a stale image. */
+  coverUrl: string | null;
 }
 
 export interface RefreshResult {
@@ -126,7 +129,7 @@ export async function refreshQueue(ctx: AppContext, options: { crawlFacets?: boo
   return result;
 }
 
-export function listQueue(ctx: AppContext, state?: string, limit = 200): QueueEntry[] {
+export async function listQueue(ctx: AppContext, state?: string, limit = 200): Promise<QueueEntry[]> {
   const rows = state
     ? ctx.db
         .query<QueueRow, [string, number]>(
@@ -137,14 +140,18 @@ export function listQueue(ctx: AppContext, state?: string, limit = 200): QueueEn
         .query<QueueRow, [number]>("select * from queue order by datetime(created_at) desc limit ?")
         .all(limit);
 
-  return rows.map((row) => {
-    const link = getLinkBySource(ctx.db, row.source_id);
-    return {
-      ...row,
-      book: getBook(ctx.db, row.source_id),
-      linkedItemId: link?.abs_item_id ?? null,
-    };
-  });
+  return Promise.all(
+    rows.map(async (row) => {
+      const book = getBook(ctx.db, row.source_id);
+      const link = getLinkBySource(ctx.db, row.source_id);
+      return {
+        ...row,
+        book,
+        linkedItemId: link?.abs_item_id ?? null,
+        coverUrl: book ? await coverProxyUrl(book, ctx.config) : null,
+      };
+    }),
+  );
 }
 
 export function setQueueState(ctx: AppContext, sourceId: number, state: string, note?: string): void {

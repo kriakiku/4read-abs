@@ -98,9 +98,9 @@ export function createApp(ctx: AppContext): Hono {
     }
   });
 
-  app.get("/api/queue", (c) => {
+  app.get("/api/queue", async (c) => {
     const state = c.req.query("state") ?? undefined;
-    return c.json({ entries: listQueue(ctx, state === "all" ? undefined : (state ?? "new")) });
+    return c.json({ entries: await listQueue(ctx, state === "all" ? undefined : (state ?? "new")) });
   });
 
   app.post("/api/queue/:sourceId/:action", (c) => {
@@ -132,7 +132,12 @@ export function createApp(ctx: AppContext): Hono {
     const cached = await cachedCover(book, ctx.config);
     if (cached) {
       return new Response(Bun.file(cached.path), {
-        headers: { "content-type": cached.contentType, "cache-control": "public, max-age=86400" },
+        headers: {
+          "content-type": cached.contentType,
+          etag: `"${cached.version}"`,
+          // Versioned by the query string from coverProxyUrl; a short TTL is fine.
+          "cache-control": "public, max-age=3600",
+        },
       });
     }
 

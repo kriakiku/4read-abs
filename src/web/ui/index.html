@@ -383,8 +383,8 @@
           cover.alt = "";
           // Served from our own cache: fetching 4read.org directly from the browser would run
           // into the same Cloudflare challenge.
-          if (book?.cover_url) {
-            cover.src = `/api/covers/${entry.source_id}`;
+          if (entry.coverUrl || book?.cover_url) {
+            cover.src = entry.coverUrl || `/api/covers/${entry.source_id}`;
             cover.addEventListener("error", () => cover.classList.add("cover--missing"));
           }
           grid.append(cover);

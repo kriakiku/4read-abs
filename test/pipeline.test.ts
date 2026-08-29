@@ -83,7 +83,14 @@ async function buildFake(options: { absItems?: unknown[] } = {}): Promise<Fake> 
       // A blog post: same URL shape, but no book markup.
       if (pathname.startsWith("/8130-")) return send("<html><body><h1>Дикторам - наголоси!</h1></body></html>");
       if (pathname.startsWith("/uploads/")) {
-        return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/webp" } });
+        // Fixture covers end in .jpg. Serve a real JPEG larger than the cache's 64-byte floor.
+        const jpeg = Uint8Array.from(
+          atob(
+            "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBAQEBAVFRUVFRUVFRUVFRUWFxUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMtNygtLisBCgoKDg0OGxAQGy0lHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAbAAACAwEBAQAAAAAAAAAAAAAFBgMEBwIBAP/EAD0QAAIBAwMCBAMFBQkAAAAAAAECAwAEEQUSITFBBhMiUWFxMoGRFCNCscHRFSQzUmLh8PEWJDNTgpKi/8QAGQEAAwEBAQAAAAAAAAAAAAAAAAECAwQF/8QAIhEAAgICAgMBAQEAAAAAAAAAAAECEQMhEjFBUQQiYRNh/9oADAMBAAIRAxEAPwD3+iiigD//2Q==",
+          ),
+          (c) => c.charCodeAt(0),
+        );
+        return new Response(jpeg, { headers: { "content-type": "image/jpeg" } });
       }
       return new Response("not found", { status: 404 });
     },
@@ -262,10 +269,11 @@ describe("catalogue pipeline", () => {
     expect(result.subscriptions).toBe(2);
     expect(result.queued).toBe(2);
 
-    const entries = listQueue(fake.ctx, "new");
+    const entries = await listQueue(fake.ctx, "new");
     const hpmor = entries.find((entry) => entry.source_id === 3130)!;
     expect(hpmor.reason).toContain("narrator:Характерник");
     expect(hpmor.book?.title).toContain("Книга 2");
+    expect(hpmor.coverUrl).toMatch(/^\/api\/covers\/3130/);
   });
 
   test("accept and ignore move entries between states", async () => {
@@ -275,8 +283,8 @@ describe("catalogue pipeline", () => {
     await refreshQueue(fake.ctx);
 
     setQueueState(fake.ctx, 3130, "ignored");
-    expect(listQueue(fake.ctx, "new").some((entry) => entry.source_id === 3130)).toBe(false);
-    expect(listQueue(fake.ctx, "ignored")).toHaveLength(1);
+    expect((await listQueue(fake.ctx, "new")).some((entry) => entry.source_id === 3130)).toBe(false);
+    expect(await listQueue(fake.ctx, "ignored")).toHaveLength(1);
   });
 });
 
@@ -302,8 +310,8 @@ describe("audiobookshelf sync", () => {
     expect(written.tags).toContain("4read:3130");
     expect(written.language).toBe("ukr");
 
-    // The cover travels with the sidecar.
-    const cover = Bun.file(join(fake.dir, "library", "Yudkovski", "HPMOR 2", "cover.webp"));
+    // The cover travels with the sidecar (fixture URLs are .jpg).
+    const cover = Bun.file(join(fake.dir, "library", "Yudkovski", "HPMOR 2", "cover.jpg"));
     expect(await cover.exists()).toBe(true);
   });
 
@@ -472,8 +480,8 @@ describe("http api", () => {
 
     const response = await app.request("/api/covers/3130");
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("image/webp");
-    expect((await response.bytes()).length).toBeGreaterThan(0);
+    expect(response.headers.get("content-type")).toBe("image/jpeg");
+    expect((await response.bytes()).length).toBeGreaterThan(64);
   });
 
   test("an uncached cover reports 404 instead of blocking on the source", async () => {
