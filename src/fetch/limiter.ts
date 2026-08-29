@@ -60,21 +60,25 @@ export class AdaptiveLimiter {
   }
 
   cooldownRemainingMs(): number {
-    if (this.cooldownUntil === null) return 0;
-    return Math.max(0, this.cooldownUntil - Date.now());
+    if (!this.inCooldown()) return 0;
+    return Math.max(0, (this.cooldownUntil ?? 0) - Date.now());
   }
 
   /**
-   * Serialises callers and holds each one until the pacing interval has elapsed, so
-   * concurrent jobs cannot collectively outpace the limit.
+   * Serialises callers and holds each one until the pacing interval (and any cooldown) has
+   * elapsed. Re-checks after sleeping so a challenge recorded by the previous caller still
+   * delays the next one.
    */
   async acquire(): Promise<void> {
     const wait = this.chain.then(async () => {
-      const now = Date.now();
-      const earliest = this.lastRequestAt === null ? now : this.lastRequestAt + this.intervalMs;
-      const cooldown = this.cooldownUntil ?? 0;
-      const target = Math.max(earliest, cooldown);
-      if (target > now) await Bun.sleep(target - now);
+      for (;;) {
+        const now = Date.now();
+        const earliest = this.lastRequestAt === null ? now : this.lastRequestAt + this.intervalMs;
+        const cooldown = this.cooldownUntil && this.cooldownUntil > now ? this.cooldownUntil : now;
+        const target = Math.max(earliest, cooldown);
+        if (target <= now) break;
+        await Bun.sleep(target - now);
+      }
       this.lastRequestAt = Date.now();
       this.requests += 1;
     });
@@ -83,6 +87,7 @@ export class AdaptiveLimiter {
     return wait;
   }
 
+  /** A plain request got through without a challenge — the origin is healthy again. */
   recordSuccess(): void {
     this.consecutiveChallenges = 0;
     this.cooldownUntil = null;

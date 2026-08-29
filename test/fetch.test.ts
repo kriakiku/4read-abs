@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { configSchema, type Config } from "../src/config.ts";
 import { openDb, type Db } from "../src/db.ts";
 import { CookieJar } from "../src/fetch/cookies.ts";
-import { ChallengeError, Fetcher } from "../src/fetch/fetcher.ts";
+import { ChallengeError, CooldownError, Fetcher } from "../src/fetch/fetcher.ts";
 import { AdaptiveLimiter } from "../src/fetch/limiter.ts";
 
 /** The interstitial 4read.org serves to non-browser clients. */
@@ -207,6 +207,22 @@ describe("adaptive limiter", () => {
     await limiter.acquire();
     expect(Date.now() - started).toBeGreaterThanOrEqual(70);
   });
+
+  test("acquire re-waits when a previous caller just entered cooldown", async () => {
+    const limiter = new AdaptiveLimiter({
+      minIntervalMs: 1,
+      maxIntervalMs: 20,
+      challengeCooldownMs: 80,
+      cooldownAfterChallenges: 1,
+    });
+    await limiter.acquire();
+    limiter.recordChallenge();
+    expect(limiter.inCooldown()).toBe(true);
+
+    const started = Date.now();
+    await limiter.acquire();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(60);
+  });
 });
 
 describe("fetcher", () => {
@@ -303,6 +319,29 @@ describe("fetcher", () => {
     expect(cover.contentType).toBe("image/webp");
     // FlareSolverr cannot return binaries, so it is only used to mint the clearance cookie.
     expect(h.flareRequests.some((request) => request.cmd === "request.get")).toBe(true);
+    await fetcher.close();
+  });
+
+  test("cover fetches refuse to probe during cooldown", async () => {
+    const h = await harness({ requireClearance: true });
+    const fetcher = new Fetcher(h.db, config(h, {
+      paths: { data: h.dir },
+      source: {
+        baseUrl: `http://localhost:${h.origin.port}`,
+        minIntervalMs: 0,
+        challengeCooldownMs: 10_000,
+      },
+      flaresolverr: { url: `http://localhost:${h.flare.port}/`, maxTimeoutMs: 5000 },
+    }));
+
+    for (let i = 0; i < 3; i += 1) fetcher.limiter.recordChallenge();
+    expect(fetcher.limiter.inCooldown()).toBe(true);
+
+    const before = h.originRequests.length;
+    await expect(fetcher.getBinary(`http://localhost:${h.origin.port}/uploads/x.webp`)).rejects.toThrow(
+      CooldownError,
+    );
+    expect(h.originRequests.length).toBe(before);
     await fetcher.close();
   });
 

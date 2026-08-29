@@ -155,6 +155,10 @@ export class Fetcher {
       throw new ChallengeError(url);
     }
 
+    if (this.limiter.inCooldown() && mode !== "always") {
+      throw new CooldownError(this.limiter.cooldownRemainingMs());
+    }
+
     // FlareSolverr runs its own browser, so it does not consume our pacing budget for the
     // origin in the same way; still serialise to avoid piling up browser sessions.
     await this.limiter.acquire();
@@ -170,6 +174,7 @@ export class Fetcher {
         this.record(url, "flaresolverr", result.status, false, true, ms);
         throw new ChallengeError(url);
       }
+      // Clearance cookies should let later direct requests through.
       this.limiter.recordSuccess();
       this.record(url, "flaresolverr", result.status, result.status < 400, false, ms);
       if (result.status >= 400) {
@@ -188,10 +193,18 @@ export class Fetcher {
   /**
    * Fetch binary content such as a cover. FlareSolverr only returns HTML, so this always
    * goes direct; when it is blocked we refresh clearance through FlareSolverr and retry.
+   * Cooldown is respected: a pause means covers wait, they do not keep probing the CDN.
    */
   async getBinary(url: string, options: { referer?: string } = {}): Promise<BinaryResult> {
+    if (this.limiter.inCooldown()) {
+      throw new CooldownError(this.limiter.cooldownRemainingMs());
+    }
+
     const attempt = async (): Promise<BinaryResult | "challenged"> => {
+      if (this.limiter.inCooldown()) return "challenged";
       await this.limiter.acquire();
+      if (this.limiter.inCooldown()) return "challenged";
+
       const started = Bun.nanoseconds();
       const headers = this.browserHeaders(options.referer);
       headers.accept = "image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8";
@@ -210,7 +223,7 @@ export class Fetcher {
       const ms = (Bun.nanoseconds() - started) / 1e6;
       this.jar.absorbSetCookie(response.headers);
 
-      if (response.status === 403 || response.status === 503) {
+      if (response.status === 403 || response.status === 503 || response.status === 429) {
         this.limiter.recordChallenge();
         this.record(url, "direct", response.status, false, true, ms);
         return "challenged";
@@ -228,20 +241,32 @@ export class Fetcher {
     const first = await attempt();
     if (first !== "challenged") return first;
 
+    if (this.limiter.inCooldown()) {
+      throw new CooldownError(this.limiter.cooldownRemainingMs());
+    }
     if (!this.flareConfigured) throw new ChallengeError(url);
 
     // Visiting the page origin through FlareSolverr mints fresh clearance cookies.
     log.debug(`refreshing clearance before retrying binary ${url}`);
     await this.refreshClearance();
+    if (this.limiter.inCooldown()) {
+      throw new CooldownError(this.limiter.cooldownRemainingMs());
+    }
+
     const second = await attempt();
-    if (second === "challenged") throw new ChallengeError(url);
+    if (second === "challenged") {
+      if (this.limiter.inCooldown()) throw new CooldownError(this.limiter.cooldownRemainingMs());
+      throw new ChallengeError(url);
+    }
     return second;
   }
 
   /** Ask FlareSolverr to solve a challenge for the origin and keep the resulting cookies. */
   async refreshClearance(): Promise<boolean> {
     if (!this.flareConfigured) return false;
+    if (this.limiter.inCooldown()) return this.jar.hasClearance();
     try {
+      await this.limiter.acquire();
       const result = await this.flare.get(`${this.config.source.baseUrl}/`);
       this.jar.setUserAgent(result.userAgent);
       if (result.cookies.length) this.jar.set(result.cookies);

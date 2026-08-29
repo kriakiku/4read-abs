@@ -4,7 +4,7 @@ import type { Config } from "./config.ts";
 import type { BookWithPeople } from "./catalog/store.ts";
 import { stagingDirFor } from "./abs/stage.ts";
 import { logger } from "./log.ts";
-import type { Fetcher } from "./fetch/fetcher.ts";
+import { CooldownError, type Fetcher } from "./fetch/fetcher.ts";
 
 const log = logger("cover");
 
@@ -105,7 +105,11 @@ export function cacheCoverInBackground(
       const cover = await downloadCoverIfStale(fetcher, book, config);
       if (cover) await write(cover);
     } catch (error) {
-      log.debug(`background cover fetch failed for ${book.source_id}: ${String(error)}`);
+      if (error instanceof CooldownError) {
+        log.debug(`background cover fetch deferred for ${book.source_id}: cooldown`);
+      } else {
+        log.debug(`background cover fetch failed for ${book.source_id}: ${String(error)}`);
+      }
     } finally {
       inFlight.delete(book.source_id);
     }
