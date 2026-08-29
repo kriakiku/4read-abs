@@ -64,7 +64,7 @@ export const configSchema = z.object({
       /** Full endpoint, e.g. http://127.0.0.1:8191/v1 */
       url: z.string().default(""),
       mode: z.enum(["auto", "always", "never"]).default("auto"),
-      maxTimeoutMs: z.number().int().min(1000).default(60_000),
+      maxTimeoutMs: z.number().int().min(1000).default(180_000),
       /** Reuse a FlareSolverr session so clearance survives between requests. */
       useSession: z.boolean().default(true),
     })

@@ -66,7 +66,9 @@
 challenge **від FlareSolverr**, зменшується, коли все спокійно. Повторні невдачі
 браузера вмикають cooldown для прямих запитів; FlareSolverr при цьому **не
 блокується**. Sitemap бере лише `news_pages.xml` (не `category_pages` /
-`tags_pages` / `static_pages`).
+`tags_pages` / `static_pages`). Перший sitemap після seed іде через Chrome і може
+зайняти хвилину+ на великому XML — у логах з’являться `due: sitemap` / `Chrome GET`.
+`flaresolverr.maxTimeoutMs` за замовчуванням 180s.
 
 Обкладинки з 4read Cloudflare блокує для звичайного HTTP-клієнта навіть із
 `cf_clearance` (інший TLS-fingerprint). За замовчуванням `covers.prefer:

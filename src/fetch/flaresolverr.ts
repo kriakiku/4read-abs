@@ -125,12 +125,17 @@ export class FlareSolverrClient {
   }
 
   async get(url: string): Promise<FlareResult> {
+    log.info(`Chrome GET ${url}`);
+    const started = Date.now();
     const result = await this.requestGet(url);
     if (result.status !== "ok" || !result.solution) {
       throw new Error(`FlareSolverr error: ${result.message ?? "no solution"}`);
     }
 
     const solution = result.solution;
+    log.info(
+      `Chrome GET done in ${Math.round((Date.now() - started) / 1000)}s → HTTP ${solution.status ?? 0} (${(solution.response ?? "").length} bytes)`,
+    );
     return {
       status: solution.status ?? 0,
       body: solution.response ?? "",
