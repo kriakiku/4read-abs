@@ -537,6 +537,35 @@ describe("http api", () => {
     expect(bad.status).toBe(400);
   });
 
+  test("deleting a queue entry allows it to be re-queued", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    await refreshQueue(fake.ctx);
+    const app = createApp(fake.ctx);
+
+    setQueueState(fake.ctx, 3130, "prepared", join(fake.dir, "library", "prepared-book"));
+    await mkdir(join(fake.dir, "library", "prepared-book"), { recursive: true });
+    await writeFile(join(fake.dir, "library", "prepared-book", "0001-track.mp3"), "x".repeat(2048));
+    await writeFile(join(fake.dir, "library", "prepared-book", ".4read-audio-playlist"), "http://x/a.m3u");
+
+    const del = await app.request("/api/queue/3130", { method: "DELETE" });
+    expect(del.status).toBe(200);
+    const body = (await del.json()) as { ok: boolean; clearedAudio: number };
+    expect(body.ok).toBe(true);
+    expect(body.clearedAudio).toBeGreaterThan(0);
+
+    const gone = (await (await app.request("/api/queue?state=all")).json()) as {
+      entries: Array<{ source_id: number }>;
+    };
+    expect(gone.entries.every((entry) => entry.source_id !== 3130)).toBe(true);
+
+    const again = await refreshQueue(fake.ctx);
+    expect(again.queued).toBeGreaterThan(0);
+    const restored = await listQueue(fake.ctx, "new");
+    expect(restored.some((entry) => entry.source_id === 3130)).toBe(true);
+  });
+
   test("search finds catalogue entries for manual linking", async () => {
     const fake = await buildFake();
     await syncSitemap(fake.ctx);

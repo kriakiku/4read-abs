@@ -96,6 +96,7 @@
       button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
       button:disabled { opacity: 0.45; cursor: not-allowed; }
       button.primary { background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); border-color: var(--accent); color: #fff; }
+      button.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--border)); }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       .yaml-editor {
         position: relative;
@@ -488,6 +489,27 @@
               button.disabled = true;
               try {
                 await api(`/api/queue/${entry.source_id}/${action}`, { method: "POST" });
+                await loadQueue();
+                await loadStatus();
+              } catch (error) {
+                alert(String(error));
+                button.disabled = false;
+              }
+            });
+            actions.append(button);
+          }
+          {
+            const button = document.createElement("button");
+            button.textContent = "Delete";
+            button.className = "danger";
+            button.title = "Remove from queue and clear local audio so it can be re-queued and re-downloaded";
+            button.addEventListener("click", async () => {
+              if (!confirm(`Delete #${entry.source_id} from the queue?\nLocal audio cache will be cleared so the next sync can re-download.`)) {
+                return;
+              }
+              button.disabled = true;
+              try {
+                await api(`/api/queue/${entry.source_id}`, { method: "DELETE" });
                 await loadQueue();
                 await loadStatus();
               } catch (error) {

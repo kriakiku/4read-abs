@@ -76,6 +76,10 @@ export function removeLink(db: Db, itemId: string): void {
   db.query("delete from abs_links where abs_item_id = ?").run(itemId);
 }
 
+export function removeLinkBySource(db: Db, sourceId: number): void {
+  db.query("delete from abs_links where source_id = ?").run(sourceId);
+}
+
 export interface MatchCandidate {
   book: BookWithPeople;
   score: number;

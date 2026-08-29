@@ -1,8 +1,9 @@
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { Config } from "../config.ts";
 import type { BookWithPeople } from "../catalog/store.ts";
 import type { Fetcher } from "../fetch/fetcher.ts";
+import { isMediaFile } from "../abs/stage.ts";
 import { logger } from "../log.ts";
 
 const log = logger("audio");
@@ -122,6 +123,30 @@ async function fileLooksComplete(path: string, minBytes: number): Promise<boolea
   } catch {
     return false;
   }
+}
+
+/**
+ * Drop playlist marker and media files so the next sync re-fetches audio.
+ * Leaves metadata.json / cover.* alone.
+ */
+export async function clearDownloadedAudio(dir: string): Promise<number> {
+  let removed = 0;
+  try {
+    await rm(join(dir, PLAYLIST_MARKER), { force: true });
+  } catch {
+    // ignore
+  }
+  try {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !isMediaFile(entry.name)) continue;
+      await rm(join(dir, entry.name), { force: true });
+      removed += 1;
+    }
+  } catch {
+    // Missing folder is fine.
+  }
+  if (removed > 0) log.info(`cleared ${removed} audio file(s) from ${dir}`);
+  return removed;
 }
 
 /**
