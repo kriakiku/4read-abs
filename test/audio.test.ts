@@ -227,6 +227,52 @@ describe("playlist audio fetch", () => {
     expect(again?.skipped).toBe(2);
   });
 
+  test("playlist fetch sends Accept */*, article Referer, and viewed_ids cookie", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-headers-"));
+    tempDirs.push(dir);
+    const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => i % 256);
+    const seen: Array<{ path: string; accept: string | null; referer: string | null; cookie: string | null }> = [];
+
+    const origin = Bun.serve({
+      port: 0,
+      fetch(request): Response {
+        const { pathname } = new URL(request.url);
+        seen.push({
+          path: pathname,
+          accept: request.headers.get("accept"),
+          referer: request.headers.get("referer"),
+          cookie: request.headers.get("cookie"),
+        });
+        if (pathname.endsWith(".m3u")) {
+          const base = `http://127.0.0.1:${origin.port}`;
+          return new Response(`#EXTM3U\n${base}/a.mp3\n`, {
+            headers: { "content-type": "audio/x-mpegurl" },
+          });
+        }
+        if (pathname.endsWith(".mp3")) {
+          return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
+        }
+        return new Response("no", { status: 404 });
+      },
+    });
+    servers.push(origin);
+
+    const { fetcher } = await makeFetcher();
+    fetcher.jar.set([{ name: "viewed_ids", value: "100" }]);
+    const config = configSchema.parse({
+      source: { baseUrl: `http://127.0.0.1:${origin.port}` },
+    });
+    await ensureAudioFromPlaylist(book(), join(dir, "book"), config, fetcher);
+
+    const playlistReq = seen.find((r) => r.path.endsWith(".m3u"));
+    expect(playlistReq).toBeTruthy();
+    expect(playlistReq!.accept).toBe("*/*");
+    expect(playlistReq!.referer).toBe(
+      `http://127.0.0.1:${origin.port}/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.html`,
+    );
+    expect(playlistReq!.cookie).toContain("viewed_ids=100,6840");
+  });
+
   test("falls back to FlareSolverr Chrome download for challenged media", async () => {
     const dir = await mkdtemp(join(tmpdir(), "4read-audio-flare-"));
     tempDirs.push(dir);

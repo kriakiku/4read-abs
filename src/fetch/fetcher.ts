@@ -103,20 +103,31 @@ export class Fetcher {
     return this.jar.userAgent ?? this.config.source.userAgent;
   }
 
-  private browserHeaders(referer?: string): Record<string, string> {
+  private browserHeaders(options: {
+    referer?: string;
+    accept?: string;
+    purpose?: "document" | "playlist";
+  } = {}): Record<string, string> {
+    const purpose = options.purpose ?? "document";
     const headers: Record<string, string> = {
       "user-agent": this.userAgent(),
-      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      accept:
+        options.accept ??
+        (purpose === "playlist"
+          ? "*/*"
+          : "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
       "accept-language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
-      "sec-fetch-dest": "document",
-      "sec-fetch-mode": "navigate",
-      "sec-fetch-site": referer ? "same-origin" : "none",
-      "sec-fetch-user": "?1",
-      "upgrade-insecure-requests": "1",
+      "sec-fetch-dest": purpose === "playlist" ? "empty" : "document",
+      "sec-fetch-mode": purpose === "playlist" ? "cors" : "navigate",
+      "sec-fetch-site": options.referer ? "same-origin" : "none",
     };
+    if (purpose === "document") {
+      headers["sec-fetch-user"] = "?1";
+      headers["upgrade-insecure-requests"] = "1";
+    }
     const cookie = this.jar.header();
     if (cookie) headers.cookie = cookie;
-    if (referer) headers.referer = referer;
+    if (options.referer) headers.referer = options.referer;
     return headers;
   }
 
@@ -138,7 +149,10 @@ export class Fetcher {
    * escalates to FlareSolverr on a challenge. Once Bun's TLS fingerprint is rejected, further
    * direct probes are skipped for a while — clearance cookies cannot be reused across JA3s.
    */
-  async getText(url: string, options: { referer?: string } = {}): Promise<TextResult> {
+  async getText(
+    url: string,
+    options: { referer?: string; accept?: string; purpose?: "document" | "playlist" } = {},
+  ): Promise<TextResult> {
     // Cooldown only blocks hammering the origin directly. FlareSolverr is a different client
     // and is how we keep crawling while Bun's fingerprint is rejected.
     if (this.limiter.inCooldown() && !this.flareConfigured) {
@@ -146,13 +160,14 @@ export class Fetcher {
     }
 
     const flareFirst = this.preferFlareFirst() || this.limiter.inCooldown();
+    const headers = this.browserHeaders(options);
 
     if (!flareFirst) {
       await this.limiter.acquire();
       const started = Bun.nanoseconds();
       try {
         const response = await fetch(url, {
-          headers: this.browserHeaders(options.referer),
+          headers,
           redirect: "follow",
           signal: AbortSignal.timeout(this.config.source.requestTimeoutMs),
         });
@@ -197,7 +212,10 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
-      const result = await this.flare.get(url);
+      const result = await this.flare.get(url, {
+        cookies: this.jar.list(),
+        headers: flareHeadersFrom(headers),
+      });
       const ms = (Bun.nanoseconds() - started) / 1e6;
       this.jar.setUserAgent(result.userAgent);
       if (result.cookies.length) this.jar.set(result.cookies);
@@ -241,7 +259,7 @@ export class Fetcher {
       await this.limiter.acquire();
 
       const started = Bun.nanoseconds();
-      const headers = this.browserHeaders(options.referer);
+      const headers = this.browserHeaders({ referer: options.referer });
       if (purpose === "media") {
         headers.accept = "audio/mpeg,audio/*,application/octet-stream,*/*;q=0.8";
         headers["sec-fetch-dest"] = "audio";
@@ -346,4 +364,15 @@ export class Fetcher {
   async close(): Promise<void> {
     await this.flare.destroy();
   }
+}
+
+/** Headers FlareSolverr will forward; skip Cookie (passed separately) and hop-by-hop noise. */
+function flareHeadersFrom(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (lower === "cookie" || lower === "host" || lower === "content-length") continue;
+    out[key] = value;
+  }
+  return out;
 }

@@ -185,6 +185,15 @@ describe("cookie jar", () => {
     expect(jar.header()).toContain("a=1");
     expect(jar.header()).toContain("b=2");
   });
+
+  test("appendViewedId accumulates book ids without duplicates", async () => {
+    const h = await harness();
+    const jar = new CookieJar(h.db);
+    jar.appendViewedId(5546);
+    jar.appendViewedId(8054);
+    jar.appendViewedId(5546);
+    expect(jar.header()).toBe("viewed_ids=5546,8054");
+  });
 });
 
 describe("adaptive limiter", () => {

@@ -124,10 +124,27 @@ export class FlareSolverrClient {
     return result;
   }
 
-  async get(url: string): Promise<FlareResult> {
+  async get(
+    url: string,
+    options: {
+      cookies?: StoredCookie[];
+      headers?: Record<string, string>;
+    } = {},
+  ): Promise<FlareResult> {
     log.info(`Chrome GET ${url}`);
     const started = Date.now();
-    const result = await this.requestGet(url);
+    const extra: Record<string, unknown> = {};
+    if (options.cookies?.length) {
+      extra.cookies = options.cookies.map((c) => ({
+        name: c.name,
+        value: c.value,
+        ...(c.expires !== undefined ? { expires: c.expires } : {}),
+      }));
+    }
+    if (options.headers && Object.keys(options.headers).length > 0) {
+      extra.headers = options.headers;
+    }
+    const result = await this.requestGet(url, extra);
     if (result.status !== "ok" || !result.solution) {
       throw new Error(`FlareSolverr error: ${result.message ?? "no solution"}`);
     }

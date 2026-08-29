@@ -4,7 +4,7 @@ import type { Config } from "../config.ts";
 import type { BookWithPeople } from "../catalog/store.ts";
 import type { Fetcher } from "../fetch/fetcher.ts";
 import { isMediaFile } from "../abs/stage.ts";
-import { parseBookUrl } from "../source/urls.ts";
+import { parseBookUrl, bookUrl } from "../source/urls.ts";
 import { logger } from "../log.ts";
 
 const log = logger("audio");
@@ -255,6 +255,20 @@ export async function clearBookFolder(dir: string): Promise<{ audio: number; wip
 }
 
 /**
+ * Article page used as Referer when fetching `/m33u2/{id}-{slug}.m3u`.
+ * Always on `source.baseUrl`, e.g. `https://4read.org/5546-garri-garrison-….html`.
+ */
+export function bookPageReferer(
+  book: { source_id: number; slug: string; url?: string | null },
+  config: Config,
+): string {
+  const base = config.source.baseUrl.replace(/\/+$/, "");
+  const key = playlistKeyFor(book);
+  if (key) return `${base}/${key}.html`;
+  return bookUrl(book.source_id, book.slug, base);
+}
+
+/**
  * Fetch `{source.baseUrl}/m33u2/{id}-{slug}.m3u` and download each listed media file into `dir`
  * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
  * Uses the shared Fetcher (direct → FlareSolverr Chrome) so challenged hosts still work.
@@ -296,7 +310,15 @@ export async function ensureAudioFromPlaylist(
 
   let body: string;
   try {
-    const text = await fetcher.getText(playlistUrl);
+    // Player requests the playlist with Accept: */*, Referer = article page, and
+    // viewed_ids containing this book's numeric id.
+    const referer = bookPageReferer(book, config);
+    fetcher.jar.appendViewedId(book.source_id);
+    const text = await fetcher.getText(playlistUrl, {
+      purpose: "playlist",
+      accept: "*/*",
+      referer,
+    });
     body = extractPlaylistBody(text.body);
   } catch (error) {
     log.warn(`playlist fetch failed for ${book.slug}: ${String(error)}`);
