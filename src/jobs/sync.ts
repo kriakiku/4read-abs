@@ -1,7 +1,7 @@
-import { join, resolve } from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { AppContext } from "../context.ts";
 import { logger } from "../log.ts";
+import { cachedCover, downloadCoverIfStale, type DownloadedCover } from "../covers.ts";
 import { setMeta } from "../db.ts";
 import { getBook, type BookWithPeople } from "../catalog/store.ts";
 import {
@@ -20,38 +20,16 @@ import {
   type Sidecar,
 } from "../abs/metadata.ts";
 import { mapAbsPathToLocal } from "../abs/pathmap.ts";
-import { placeIntoLibrary, stageBook, stagingDirFor, targetFolderFor } from "../abs/stage.ts";
+import { placeIntoLibrary, stageBook, targetFolderFor } from "../abs/stage.ts";
 import type { AbsItem } from "../abs/client.ts";
 import { setQueueState } from "./subscriptions.ts";
 
 const log = logger("sync");
 
-const COVER_MARKER = ".4read-cover-source";
-
-/**
- * Download the cover into the staging folder, skipping the request when the folder already
- * holds the cover for this exact URL.
- */
-async function ensureCover(
-  ctx: AppContext,
-  book: BookWithPeople,
-): Promise<{ bytes: Uint8Array; contentType: string | null } | null> {
-  if (!book.cover_url) return null;
-  const dir = stagingDirFor(book, ctx.config);
-  const markerPath = join(dir, COVER_MARKER);
-
+/** Never let a blocked cover stop the metadata write; the sidecar still goes out. */
+async function ensureCover(ctx: AppContext, book: BookWithPeople): Promise<DownloadedCover | null> {
   try {
-    const marker = await readFile(markerPath, "utf8");
-    if (marker.trim() === book.cover_url) return null;
-  } catch {
-    // No marker yet: fall through and download.
-  }
-
-  try {
-    const result = await ctx.fetcher.getBinary(book.cover_url, { referer: book.url });
-    await mkdir(dir, { recursive: true });
-    await writeFile(markerPath, book.cover_url);
-    return { bytes: result.bytes, contentType: result.contentType };
+    return await downloadCoverIfStale(ctx.fetcher, book, ctx.config);
   } catch (error) {
     log.warn(`cover download failed for ${book.source_id}: ${String(error)}`);
     return null;
@@ -158,11 +136,7 @@ async function syncOneItem(
 }
 
 async function coverPresent(ctx: AppContext, book: BookWithPeople): Promise<boolean> {
-  const dir = stagingDirFor(book, ctx.config);
-  for (const extension of [".jpg", ".jpeg", ".png", ".webp"]) {
-    if (await Bun.file(join(dir, `cover${extension}`)).exists()) return true;
-  }
-  return false;
+  return (await cachedCover(book, ctx.config)) !== null;
 }
 
 /**

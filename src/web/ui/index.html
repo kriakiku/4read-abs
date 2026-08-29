@@ -1,9 +1,13 @@
 <!doctype html>
-<html lang="uk">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>4read → Audiobookshelf</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%236aa9ff'/%3E%3Cpath d='M4 4h5a3 3 0 0 1 3 3v5H7a3 3 0 0 1-3-3z' fill='%230f1216'/%3E%3C/svg%3E"
+    />
     <style>
       :root {
         --bg: #0f1216;
@@ -134,9 +138,19 @@
       .msg { font-size: 13px; }
       .msg.ok { color: var(--ok); }
       .msg.err { color: var(--err); }
-      .cover { width: 44px; height: 66px; object-fit: cover; border-radius: 4px; background: var(--panel); }
+      .cover {
+        width: 44px;
+        height: 66px;
+        object-fit: cover;
+        border-radius: 4px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+      }
+      /* A cover that is not cached yet should read as an empty slot, not a broken image. */
+      .cover--missing { visibility: hidden; }
       .item-grid { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: start; }
-      select {
+      select,
+      input[type="search"] {
         font: inherit;
         background: var(--panel-2);
         color: var(--text);
@@ -144,6 +158,10 @@
         border-radius: 7px;
         padding: 6px 10px;
       }
+      select { max-width: 420px; }
+      input[type="search"] { min-width: 200px; }
+      select:focus,
+      input[type="search"]:focus { outline: none; border-color: var(--accent); }
       .tabs { display: flex; gap: 6px; }
       .tabs button.active { border-color: var(--accent); color: var(--accent); }
     </style>
@@ -158,19 +176,19 @@
     <main>
       <section>
         <h2>
-          Стан
+          Status
           <span class="row">
-            <button id="btn-refresh">Оновити</button>
+            <button id="btn-refresh">Refresh</button>
           </span>
         </h2>
         <div class="body">
           <div class="cards" id="status-cards"></div>
           <div class="row" style="margin-top: 16px">
-            <button data-job="seed">Засіяти автори/диктори</button>
-            <button data-job="sitemap">Синхронізувати sitemap</button>
-            <button data-job="backfill">Довантажити деталі</button>
-            <button data-job="subscriptions">Перевірити підписки</button>
-            <button data-job="sync" class="primary">Синхронізувати з ABS</button>
+            <button data-job="seed">Seed authors / narrators</button>
+            <button data-job="sitemap">Sync sitemap</button>
+            <button data-job="backfill">Fetch details</button>
+            <button data-job="subscriptions">Check subscriptions</button>
+            <button data-job="sync" class="primary">Sync with ABS</button>
           </div>
           <div class="msg" id="job-msg" style="margin-top: 10px"></div>
         </div>
@@ -178,12 +196,12 @@
 
       <section>
         <h2>
-          Новинки за підписками
+          New from subscriptions
           <span class="tabs" id="queue-tabs">
-            <button data-state="new" class="active">Нові</button>
-            <button data-state="accepted">Прийняті</button>
-            <button data-state="ignored">Проігноровані</button>
-            <button data-state="all">Усі</button>
+            <button data-state="new" class="active">New</button>
+            <button data-state="accepted">Accepted</button>
+            <button data-state="ignored">Ignored</button>
+            <button data-state="all">All</button>
           </span>
         </h2>
         <div class="body"><div class="list" id="queue-list"></div></div>
@@ -191,32 +209,32 @@
 
       <section>
         <h2>
-          Книги ABS без відповідності
-          <button id="btn-unmatched">Завантажити</button>
+          Unmatched ABS books
+          <button id="btn-unmatched">Load</button>
         </h2>
-        <div class="body"><div class="list" id="unmatched-list"><span class="empty">Натисніть «Завантажити».</span></div></div>
+        <div class="body"><div class="list" id="unmatched-list"><span class="empty">Click Load.</span></div></div>
       </section>
 
       <section>
         <h2>
-          Конфігурація
+          Configuration
           <span class="row">
             <span class="msg" id="config-msg"></span>
-            <button id="btn-validate">Перевірити</button>
-            <button id="btn-save" class="primary">Зберегти</button>
+            <button id="btn-validate">Validate</button>
+            <button id="btn-save" class="primary">Save</button>
           </span>
         </h2>
         <div class="body">
           <p class="msg" style="color: var(--muted); margin-top: 0">
-            YAML. Секрети (<code>ABS_URL</code>, <code>ABS_API_KEY</code>, <code>HARDCOVER_API_KEY</code>,
-            <code>FLARESOLVERR_URL</code>) задаються через змінні оточення й перекривають файл.
+            YAML. Secrets (<code>ABS_URL</code>, <code>ABS_API_KEY</code>, <code>HARDCOVER_API_KEY</code>,
+            <code>FLARESOLVERR_URL</code>) come from the environment and override this file.
           </p>
           <textarea id="config-text" spellcheck="false"></textarea>
         </div>
       </section>
 
       <section>
-        <h2>Журнал</h2>
+        <h2>Log</h2>
         <div class="body"><pre class="logs" id="logs"></pre></div>
       </section>
     </main>
@@ -256,19 +274,19 @@
       }
 
       function ago(iso) {
-        if (!iso) return "ніколи";
+        if (!iso) return "never";
         const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
-        if (seconds < 90) return `${Math.round(seconds)} с тому`;
-        if (seconds < 5400) return `${Math.round(seconds / 60)} хв тому`;
-        if (seconds < 172800) return `${Math.round(seconds / 3600)} год тому`;
-        return `${Math.round(seconds / 86400)} дн тому`;
+        if (seconds < 90) return `${Math.round(seconds)}s ago`;
+        if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+        if (seconds < 172800) return `${Math.round(seconds / 3600)}h ago`;
+        return `${Math.round(seconds / 86400)}d ago`;
       }
 
       function duration(seconds) {
         if (!seconds) return null;
         const hours = Math.floor(seconds / 3600);
         const minutes = Math.round((seconds % 3600) / 60);
-        return hours > 0 ? `${hours} год ${minutes} хв` : `${minutes} хв`;
+        return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
       }
 
       let statusCache = null;
@@ -281,40 +299,40 @@
         pills.replaceChildren();
         pills.append(
           pill(
-            status.integrations.audiobookshelf ? "ABS підключено" : "ABS не налаштовано",
+            status.integrations.audiobookshelf ? "ABS connected" : "ABS not configured",
             status.integrations.audiobookshelf ? "ok" : "warn",
           ),
         );
         pills.append(pill(`FlareSolverr: ${status.fetch.flaresolverr}`, status.fetch.flaresolverr === "not configured" ? "warn" : "ok"));
         if (status.integrations.hardcover) pills.append(pill("Hardcover", "ok"));
         if (status.fetch.cooldownRemainingMs > 0) {
-          pills.append(pill(`Пауза ${Math.ceil(status.fetch.cooldownRemainingMs / 1000)} с`, "err"));
+          pills.append(pill(`Paused ${Math.ceil(status.fetch.cooldownRemainingMs / 1000)}s`, "err"));
         }
 
         const running = status.jobs.filter((job) => job.running).map((job) => job.name);
         $("header-sub").textContent = running.length
-          ? `виконується: ${running.join(", ")}`
-          : `запущено ${ago(status.startedAt)}`;
+          ? `running: ${running.join(", ")}`
+          : `up ${ago(status.startedAt)}`;
 
         const cards = $("status-cards");
         cards.replaceChildren();
-        cards.append(card("Книг у каталозі", status.catalog.books, `${status.catalog.booksDetailed} з деталями`));
-        cards.append(card("Черга деталей", status.catalog.booksPending, `sitemap: ${ago(status.timestamps.sitemapSyncedAt)}`));
-        cards.append(card("Авторів", status.catalog.authors, `${status.catalog.series} циклів`));
-        cards.append(card("Дикторів", status.catalog.narrators, `${status.preferredNarrators.length} улюблених`));
+        cards.append(card("Books in catalogue", status.catalog.books, `${status.catalog.booksDetailed} with details`));
+        cards.append(card("Detail backlog", status.catalog.booksPending, `sitemap: ${ago(status.timestamps.sitemapSyncedAt)}`));
+        cards.append(card("Authors", status.catalog.authors, `${status.catalog.series} series`));
+        cards.append(card("Narrators", status.catalog.narrators, `${status.preferredNarrators.length} preferred`));
         cards.append(
-          card("Новинок", status.queue.new ?? 0, `прийнято ${status.queue.accepted ?? 0}, синхр. ${status.queue.synced ?? 0}`),
+          card("New releases", status.queue.new ?? 0, `accepted ${status.queue.accepted ?? 0}, synced ${status.queue.synced ?? 0}`),
         );
         cards.append(
           card(
-            "Запитів до 4read",
+            "4read requests",
             status.fetch.requests,
-            `інтервал ${Math.round(status.fetch.intervalMs / 100) / 10} с, челенджів ${status.fetch.challenges}`,
+            `interval ${Math.round(status.fetch.intervalMs / 100) / 10}s, challenges ${status.fetch.challenges}`,
           ),
         );
-        cards.append(card("Підписок", status.subscriptions.length, `остання синхр. ABS: ${ago(status.timestamps.syncRanAt)}`));
+        cards.append(card("Subscriptions", status.subscriptions.length, `last ABS sync: ${ago(status.timestamps.syncRanAt)}`));
         cards.append(
-          card("Staging", status.integrations.stagingPath, status.integrations.absLibraryPath ?? "бібліотека ABS не змонтована"),
+          card("Staging", status.integrations.stagingPath, status.integrations.absLibraryPath ?? "ABS library not mounted"),
         );
 
         for (const button of document.querySelectorAll("button[data-job]")) {
@@ -346,7 +364,7 @@
         if (data.entries.length === 0) {
           const empty = document.createElement("span");
           empty.className = "empty";
-          empty.textContent = "Порожньо.";
+          empty.textContent = "Empty.";
           list.append(empty);
           return;
         }
@@ -363,7 +381,12 @@
           cover.className = "cover";
           cover.loading = "lazy";
           cover.alt = "";
-          if (book?.cover_url) cover.src = book.cover_url;
+          // Served from our own cache: fetching 4read.org directly from the browser would run
+          // into the same Cloudflare challenge.
+          if (book?.cover_url) {
+            cover.src = `/api/covers/${entry.source_id}`;
+            cover.addEventListener("error", () => cover.classList.add("cover--missing"));
+          }
           grid.append(cover);
 
           const middle = document.createElement("div");
@@ -375,9 +398,9 @@
           const meta = document.createElement("div");
           meta.className = "meta";
           const bits = [];
-          if (book?.authors?.length) bits.push(`Автор: ${book.authors.join(", ")}`);
-          if (book?.narrators?.length) bits.push(`Читає: ${book.narrators.join(", ")}`);
-          if (book?.series_name) bits.push(`Цикл: ${book.series_name}${book.series_seq ? ` #${book.series_seq}` : ""}`);
+          if (book?.authors?.length) bits.push(`Author: ${book.authors.join(", ")}`);
+          if (book?.narrators?.length) bits.push(`Narrator: ${book.narrators.join(", ")}`);
+          if (book?.series_name) bits.push(`Series: ${book.series_name}${book.series_seq ? ` #${book.series_seq}` : ""}`);
           const length = duration(book?.duration_sec);
           if (length) bits.push(length);
           if (book?.rating) bits.push(`★ ${book.rating}`);
@@ -407,7 +430,7 @@
             link.textContent = "4read";
             actions.append(link);
           }
-          for (const [action, label] of [["accept", "Прийняти"], ["ignore", "Ігнорувати"], ["reset", "Скинути"]]) {
+          for (const [action, label] of [["accept", "Accept"], ["ignore", "Ignore"], ["reset", "Reset"]]) {
             if (queueState === "new" && action === "reset") continue;
             if (queueState === "accepted" && action === "accept") continue;
             if (queueState === "ignored" && action === "ignore") continue;
@@ -437,7 +460,7 @@
         list.replaceChildren();
         const loading = document.createElement("span");
         loading.className = "empty";
-        loading.textContent = "Завантаження…";
+        loading.textContent = "Loading…";
         list.append(loading);
 
         let data;
@@ -453,7 +476,7 @@
         if (data.items.length === 0) {
           const empty = document.createElement("span");
           empty.className = "empty";
-          empty.textContent = "Усі книги зіставлені.";
+          empty.textContent = "Every book is matched.";
           list.append(empty);
           return;
         }
@@ -469,7 +492,7 @@
 
           const meta = document.createElement("div");
           meta.className = "meta";
-          for (const text of [entry.authors.join(", ") || "без автора", entry.path]) {
+          for (const text of [entry.authors.join(", ") || "no author", entry.path]) {
             const span = document.createElement("span");
             span.textContent = text;
             meta.append(span);
@@ -478,40 +501,86 @@
 
           const row = document.createElement("div");
           row.className = "row";
-          if (entry.candidates.length === 0) {
-            const empty = document.createElement("span");
-            empty.className = "empty";
-            empty.textContent = "Немає кандидатів";
-            row.append(empty);
-          } else {
-            const select = document.createElement("select");
-            for (const candidate of entry.candidates) {
+
+          const select = document.createElement("select");
+          const fill = (options, labelFor) => {
+            select.replaceChildren();
+            for (const candidate of options) {
               const option = document.createElement("option");
-              option.value = String(candidate.sourceId);
-              option.textContent = `${candidate.title} — ${candidate.authors.join(", ")} (${candidate.score})`;
+              option.value = String(candidate.sourceId ?? candidate.source_id);
+              option.textContent = labelFor(candidate);
               select.append(option);
             }
-            row.append(select);
+          };
+          fill(entry.candidates, (c) => `${c.title} — ${c.authors.join(", ")} (${c.score})`);
+          row.append(select);
 
-            const button = document.createElement("button");
-            button.textContent = "Зв'язати й записати";
-            button.addEventListener("click", async () => {
-              button.disabled = true;
-              try {
-                await api("/api/link", {
-                  method: "POST",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify({ sourceId: Number(select.value), itemId: entry.itemId }),
-                });
-                item.remove();
-                await loadStatus();
-              } catch (error) {
-                alert(String(error));
-                button.disabled = false;
+          // Fuzzy matching often finds nothing for a renamed folder, so allow a catalogue
+          // search to pick the right book by hand.
+          const search = document.createElement("input");
+          search.type = "search";
+          search.placeholder = "Search catalogue…";
+          search.value = entry.title ?? "";
+          const runSearch = async () => {
+            const query = search.value.trim();
+            if (query.length < 2) return;
+            try {
+              const found = await api(`/api/search?q=${encodeURIComponent(query)}`);
+              if (found.results.length === 0) {
+                fill([], () => "");
+                const option = document.createElement("option");
+                option.textContent = "Nothing found";
+                option.disabled = true;
+                select.append(option);
+                return;
               }
-            });
-            row.append(button);
+              fill(found.results, (c) => `${c.title} — ${c.authors.join(", ")}`);
+            } catch (error) {
+              alert(String(error));
+            }
+          };
+          search.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") void runSearch();
+          });
+          row.append(search);
+
+          const searchButton = document.createElement("button");
+          searchButton.textContent = "Search";
+          searchButton.addEventListener("click", () => void runSearch());
+          row.append(searchButton);
+
+          const link = document.createElement("button");
+          link.textContent = "Link and write";
+          link.className = "primary";
+          link.addEventListener("click", async () => {
+            const chosen = Number(select.value);
+            if (!Number.isFinite(chosen) || !select.value) {
+              alert("Pick a book first");
+              return;
+            }
+            link.disabled = true;
+            try {
+              await api("/api/link", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ sourceId: chosen, itemId: entry.itemId }),
+              });
+              item.remove();
+              await loadStatus();
+            } catch (error) {
+              alert(String(error));
+              link.disabled = false;
+            }
+          });
+          row.append(link);
+
+          if (entry.candidates.length === 0) {
+            const hint = document.createElement("span");
+            hint.className = "empty";
+            hint.textContent = "No automatic candidates — use search";
+            row.append(hint);
           }
+
           item.append(row);
           list.append(item);
         }
@@ -539,7 +608,7 @@
             body: JSON.stringify({ text: $("config-text").value }),
           });
           message.className = result.ok ? "msg ok" : "msg err";
-          message.textContent = result.ok ? "YAML коректний" : result.error;
+          message.textContent = result.ok ? "YAML is valid" : result.error;
         } catch (error) {
           message.className = "msg err";
           message.textContent = String(error);
@@ -557,7 +626,7 @@
             body: JSON.stringify({ text: $("config-text").value }),
           });
           message.className = "msg ok";
-          message.textContent = "Збережено й перезавантажено";
+          message.textContent = "Saved and reloaded";
           await loadStatus();
         } catch (error) {
           message.className = "msg err";
@@ -575,7 +644,7 @@
           try {
             await api(`/api/jobs/${button.dataset.job}/run`, { method: "POST" });
             $("job-msg").className = "msg ok";
-            $("job-msg").textContent = `Запущено: ${button.dataset.job}`;
+            $("job-msg").textContent = `Started: ${button.dataset.job}`;
           } catch (error) {
             $("job-msg").className = "msg err";
             $("job-msg").textContent = String(error);

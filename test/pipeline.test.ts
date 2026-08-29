@@ -462,6 +462,39 @@ describe("http api", () => {
     expect(body.results.map((entry) => entry.source_id)).toContain(6840);
   });
 
+  test("covers are served from our own cache, not from the source", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    // Syncing caches the cover for the matched book in staging.
+    await syncLibrary(fake.ctx);
+    const app = createApp(fake.ctx);
+
+    const response = await app.request("/api/covers/3130");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/webp");
+    expect((await response.bytes()).length).toBeGreaterThan(0);
+  });
+
+  test("an uncached cover reports 404 instead of blocking on the source", async () => {
+    const fake = await buildFake();
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    const app = createApp(fake.ctx);
+
+    const started = Date.now();
+    const response = await app.request("/api/covers/6840");
+    expect(response.status).toBe(404);
+    // The download happens in the background, so the request must return immediately.
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("an unknown book has no cover", async () => {
+    const fake = await buildFake();
+    const app = createApp(fake.ctx);
+    expect((await app.request("/api/covers/999999")).status).toBe(404);
+  });
+
   test("the ui is served and unknown jobs are refused", async () => {
     const fake = await buildFake();
     const app = createApp(fake.ctx);

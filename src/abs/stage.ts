@@ -187,7 +187,9 @@ export async function placeIntoLibrary(
   const entries = await readdir(staged.dir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    if (entry.name.startsWith(".tmp-")) continue;
+    // Dotfiles are our own bookkeeping (the cover source marker, partial writes) and have no
+    // business in the library.
+    if (entry.name.startsWith(".")) continue;
 
     const media = isMediaFile(entry.name);
     if (mode === "metadata-only" && media) {

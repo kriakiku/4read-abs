@@ -5,6 +5,9 @@ import indexHtmlAsset from "./ui/index.html" with { type: "text" };
 import type { AppContext } from "../context.ts";
 import { parseConfigText, redactConfigText, saveConfigText } from "../config.ts";
 import { catalogCounts, getBook } from "../catalog/store.ts";
+import { cacheCoverInBackground, cachedCover } from "../covers.ts";
+import { buildSidecar } from "../abs/metadata.ts";
+import { stageBook } from "../abs/stage.ts";
 import { getMeta } from "../db.ts";
 import { recentLogs } from "../log.ts";
 import { backfillDetails, seedEntities, syncSitemap } from "../jobs/crawl.ts";
@@ -113,6 +116,30 @@ export function createApp(ctx: AppContext): Hono {
     if (!state) return c.json({ error: `unknown action ${action}` }, 400);
     setQueueState(ctx, sourceId, state);
     return c.json({ ok: true, state });
+  });
+
+  /**
+   * Serves the cover from the staging cache rather than letting the browser hit the source
+   * directly, where it would run into the same Cloudflare challenge. A cover that has not been
+   * cached yet is fetched in the background, because the source is rate limited and a UI
+   * request must not wait on it.
+   */
+  app.get("/api/covers/:sourceId", async (c) => {
+    const sourceId = Number.parseInt(c.req.param("sourceId"), 10);
+    const book = Number.isFinite(sourceId) ? getBook(ctx.db, sourceId) : null;
+    if (!book) return c.json({ error: "not found" }, 404);
+
+    const cached = await cachedCover(book, ctx.config);
+    if (cached) {
+      return new Response(Bun.file(cached.path), {
+        headers: { "content-type": cached.contentType, "cache-control": "public, max-age=86400" },
+      });
+    }
+
+    cacheCoverInBackground(ctx.fetcher, book, ctx.config, async (cover) => {
+      await stageBook(book, buildSidecar(book, ctx.config), cover, ctx.config);
+    });
+    return c.json({ error: "not cached yet" }, 404);
   });
 
   app.get("/api/books/:sourceId", (c) => {

@@ -375,17 +375,25 @@ describe("staging and placement", () => {
     expect(second.skipped).toContain("metadata.json");
   });
 
-  test("temporary files are never published", async () => {
+  test("internal bookkeeping files are never published", async () => {
     const root = await tempDir();
     const settings = config({ paths: { staging: join(root, "staging") } });
     const target = book();
 
-    const staged = await stageBook(target, buildSidecar(target, settings), null, settings);
+    const staged = await stageBook(target, buildSidecar(target, settings), {
+      bytes: new Uint8Array([1]),
+      contentType: "image/jpeg",
+    }, settings);
     await writeFile(join(staged.dir, ".tmp-leftover"), "junk");
+    await writeFile(join(staged.dir, ".4read-cover-source"), "https://4read.org/uploads/x.jpg");
 
     const library = join(root, "library", "Book");
     await placeIntoLibrary(staged, library, "full", settings);
+
     expect(await Bun.file(join(library, ".tmp-leftover")).exists()).toBe(false);
+    // The marker recording which cover URL was downloaded is ours, not the library's.
+    expect(await Bun.file(join(library, ".4read-cover-source")).exists()).toBe(false);
+    expect(await Bun.file(join(library, "cover.jpg")).exists()).toBe(true);
   });
 
   test("target folder follows the template and drops empty segments", async () => {
