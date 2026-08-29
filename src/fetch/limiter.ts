@@ -68,13 +68,19 @@ export class AdaptiveLimiter {
    * Serialises callers and holds each one until the pacing interval (and any cooldown) has
    * elapsed. Re-checks after sleeping so a challenge recorded by the previous caller still
    * delays the next one.
+   *
+   * Pass `ignoreCooldown` for FlareSolverr traffic: the browser client is not the same
+   * fingerprint that triggered the origin cooldown, and waiting 10 minutes would stall the crawl.
    */
-  async acquire(): Promise<void> {
+  async acquire(options: { ignoreCooldown?: boolean } = {}): Promise<void> {
     const wait = this.chain.then(async () => {
       for (;;) {
         const now = Date.now();
         const earliest = this.lastRequestAt === null ? now : this.lastRequestAt + this.intervalMs;
-        const cooldown = this.cooldownUntil && this.cooldownUntil > now ? this.cooldownUntil : now;
+        const cooldown =
+          !options.ignoreCooldown && this.cooldownUntil && this.cooldownUntil > now
+            ? this.cooldownUntil
+            : now;
         const target = Math.max(earliest, cooldown);
         if (target <= now) break;
         await Bun.sleep(target - now);

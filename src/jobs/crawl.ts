@@ -4,7 +4,7 @@ import { getMeta, setMeta } from "../db.ts";
 import { parseBookPage } from "../source/book.ts";
 import { parseEntityIndex } from "../source/indexes.ts";
 import { parseListingPage } from "../source/listing.ts";
-import { parseBookSitemap, parseSitemapIndex, sitemapIndexUrl } from "../source/sitemap.ts";
+import { parseBookSitemap, parseSitemapIndex, isArticleSitemapUrl, sitemapIndexUrl } from "../source/sitemap.ts";
 import { bookUrl, xfsearchUrl } from "../source/urls.ts";
 import {
   booksNeedingDetail,
@@ -63,7 +63,7 @@ export interface SitemapResult {
 export async function syncSitemap(ctx: AppContext): Promise<SitemapResult> {
   const base = ctx.config.source.baseUrl;
   const index = await ctx.fetcher.getText(sitemapIndexUrl(base));
-  const children = parseSitemapIndex(index.body).filter((url) => /news|post|page/i.test(url));
+  const children = parseSitemapIndex(index.body).filter(isArticleSitemapUrl);
   const targets = children.length > 0 ? children : [`${base}/news_pages.xml`];
 
   const result: SitemapResult = { total: 0, added: 0, stale: 0 };

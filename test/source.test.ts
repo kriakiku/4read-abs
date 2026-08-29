@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { parseBookPage } from "../src/source/book.ts";
 import { parseListingPage } from "../src/source/listing.ts";
 import { parseEntityIndex } from "../src/source/indexes.ts";
-import { parseBookSitemap, parseSitemapIndex } from "../src/source/sitemap.ts";
+import { parseBookSitemap, parseSitemapIndex, isArticleSitemapUrl } from "../src/source/sitemap.ts";
 import {
   parseBookUrl,
   parseCategoryKey,
@@ -177,6 +177,11 @@ describe("sitemap", () => {
     const children = parseSitemapIndex(await fixture("sitemap-index.xml"));
     expect(children).toContain("https://4read.org/news_pages.xml");
     expect(children.length).toBe(4);
+  });
+
+  test("keeps only the article news sitemap from the index", async () => {
+    const children = parseSitemapIndex(await fixture("sitemap-index.xml")).filter(isArticleSitemapUrl);
+    expect(children).toEqual(["https://4read.org/news_pages.xml"]);
   });
 
   test("extracts article urls with lastmod", async () => {
