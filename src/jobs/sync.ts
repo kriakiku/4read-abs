@@ -21,7 +21,13 @@ import {
   type Sidecar,
 } from "../abs/metadata.ts";
 import { mapAbsPathToLocal } from "../abs/pathmap.ts";
-import { placeIntoLibrary, stageBook, stagingDirFor, targetFolderFor } from "../abs/stage.ts";
+import {
+  folderHasMedia,
+  placeIntoLibrary,
+  stageBook,
+  stagingDirFor,
+  targetFolderFor,
+} from "../abs/stage.ts";
 import type { AbsItem } from "../abs/client.ts";
 import { setQueueState } from "./subscriptions.ts";
 
@@ -109,18 +115,26 @@ async function syncOneItem(
     scanned: false,
   };
 
-  const cover = await ensureCover(ctx, book);
-  const audioCount = await ensureAudio(ctx, book);
-  const staged = await stageBook(book, reconciled.payload, cover, ctx.config);
-
   const targetDir = localItemPath(ctx, item);
   if (!targetDir) {
     result.error = "item has no filesystem path; check audiobookshelf.pathMappings";
     return result;
   }
 
-  const mode = audioCount > 0 || staged.mediaFiles.length > 0 ? "full" : "metadata-only";
-  const placement = await placeIntoLibrary(staged, targetDir, mode, ctx.config);
+  // Sidecar/cover already written is not enough — keep trying until the library folder has media.
+  const libraryHasMedia = await folderHasMedia(targetDir);
+  if (!reconciled.changed && link?.written_hash === hash && libraryHasMedia) {
+    return result;
+  }
+
+  const cover = await ensureCover(ctx, book);
+  const audioCount = libraryHasMedia ? 0 : await ensureAudio(ctx, book);
+  const staged = await stageBook(book, reconciled.payload, cover, ctx.config);
+
+  // Place media whenever the library still lacks it and staging has tracks (including marker hits).
+  const placeMode =
+    !libraryHasMedia && (audioCount > 0 || staged.mediaFiles.length > 0) ? "full" : "metadata-only";
+  const placement = await placeIntoLibrary(staged, targetDir, placeMode, ctx.config);
   if (placement.errors.length > 0) {
     result.error = placement.errors.join("; ");
     return result;
@@ -204,7 +218,7 @@ export async function syncLibrary(ctx: AppContext): Promise<SyncResult> {
 
 /**
  * Materialise a folder in the library for accepted queue entries that Audiobookshelf does not
- * have yet, so the metadata and cover are already in place when audio is added later.
+ * have yet. Also backfills audio into already-prepared folders that only have metadata/cover.
  */
 async function createPendingFolders(ctx: AppContext, result: SyncResult): Promise<number> {
   const libraryRoot = ctx.config.paths.absLibrary;
@@ -214,8 +228,10 @@ async function createPendingFolders(ctx: AppContext, result: SyncResult): Promis
   }
 
   const rows = ctx.db
-    .query<{ source_id: number }, []>(
-      "select source_id from queue where state = 'accepted' order by datetime(created_at) limit 50",
+    .query<{ source_id: number; state: string; note: string | null }, []>(
+      `select source_id, state, note from queue
+       where state in ('accepted', 'prepared')
+       order by datetime(created_at) limit 50`,
     )
     .all();
 
@@ -226,6 +242,26 @@ async function createPendingFolders(ctx: AppContext, result: SyncResult): Promis
     if (getLinkBySource(ctx.db, row.source_id)) continue;
 
     try {
+      if (row.state === "prepared") {
+        const targetDir = row.note?.trim() || resolve(libraryRoot, targetFolderFor(book, ctx.config));
+        if (await folderHasMedia(targetDir)) continue;
+
+        log.info(`backfilling audio for prepared book ${book.source_id} (${book.slug})`);
+        const sidecar: Sidecar = buildSidecar(book, ctx.config);
+        const cover = await ensureCover(ctx, book);
+        const audioCount = await ensureAudio(ctx, book);
+        const staged = await stageBook(book, sidecar, cover, ctx.config);
+        if (audioCount === 0 && staged.mediaFiles.length === 0) continue;
+
+        const placement = await placeIntoLibrary(staged, targetDir, "full", ctx.config);
+        if (placement.errors.length > 0) {
+          result.errors.push(`${row.source_id}: ${placement.errors.join("; ")}`);
+          continue;
+        }
+        created += 1;
+        continue;
+      }
+
       const sidecar: Sidecar = buildSidecar(book, ctx.config);
       const cover = await ensureCover(ctx, book);
       await ensureAudio(ctx, book);
