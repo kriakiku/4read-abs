@@ -1,0 +1,99 @@
+# 4read-abs configuration.
+#
+# Secrets belong in environment variables, not here: ABS_URL, ABS_API_KEY,
+# HARDCOVER_API_KEY and FLARESOLVERR_URL all override whatever this file says.
+# Copy to config.yaml (or point CONFIG_FILE at it) and edit.
+
+logLevel: info
+
+server:
+  # There is no authentication, so do not bind this to a public interface.
+  host: 127.0.0.1
+  port: 8480
+
+paths:
+  data: ./data
+  # Books are assembled here first, then linked/copied into the library.
+  staging: ./staging
+  # The Audiobookshelf library as this process sees it. Required for createFolders.
+  absLibrary: ""
+
+source:
+  baseUrl: https://4read.org
+  # Cloudflare on this source reacts to burst volume. The limiter starts here and
+  # backs off automatically when it gets challenged.
+  minIntervalMs: 5000
+  maxIntervalMs: 120000
+  challengeCooldownMs: 600000
+  requestTimeoutMs: 45000
+
+flaresolverr:
+  # e.g. http://127.0.0.1:8191/v1 - without it, crawling stops at the first challenge.
+  url: ""
+  # auto: try a plain request first and escalate on a challenge
+  # always: send everything through FlareSolverr
+  # never: never use it
+  mode: auto
+  maxTimeoutMs: 60000
+  useSession: true
+
+audiobookshelf:
+  url: ""
+  apiKey: ""
+  # Empty means every book library.
+  libraryIds: []
+  # Audiobookshelf reports container paths; map them to what this process can see.
+  pathMappings: []
+  #  - from: /audiobooks
+  #    to: /library
+  triggerScan: true
+  # Rewrites tags inside the audio files. Off by default because it modifies media.
+  embedIntoAudioFiles: false
+
+hardcover:
+  # Optional: maps books onto Hardcover ids and fills ISBN/ASIN when confident.
+  enabled: false
+  apiKey: ""
+  endpoint: https://api.hardcover.app/v1/graphql
+
+sync:
+  # fill-empty     - only fill fields Audiobookshelf left empty
+  # overwrite-ours - replace what we wrote before, keep manual edits (default)
+  # overwrite-all  - always write our values
+  writePolicy: overwrite-ours
+  # Create a folder with metadata and cover for accepted books that are not in the
+  # library yet, so audio can be dropped in later.
+  createFolders: false
+  folderTemplate: "{author}/{series}/{title}"
+  # Media files are hardlinked; metadata files are always copied.
+  linkMode: hardlink
+  onCrossDevice: copy
+  language: ukr
+  tagPrefix: "4read"
+  matchThreshold: 0.86
+
+narrators:
+  # Ordered by preference: the first match wins when a book exists in several readings.
+  prefer: []
+  #  - Характерник
+  #  - Ада Роговцева
+  block: []
+
+subscriptions: []
+#  - type: series
+#    value: "all the young dudes"
+#  - type: author
+#    value: "Агата Крісті"
+#  - type: narrator
+#    value: "Характерник"
+#  - type: genre
+#    value: fentezi
+#    enabled: false
+
+schedule:
+  # Sitemap poll interval in minutes; 0 disables it.
+  incrementalMinutes: 60
+  backfillEnabled: true
+  # Detail pages per tick. Keep it small: the source rate limits aggressively.
+  backfillBatch: 25
+  syncMinutes: 180

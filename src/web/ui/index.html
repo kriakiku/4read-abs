@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4read → Audiobookshelf</title>
+    <style>
+      :root {
+        --bg: #0f1216;
+        --panel: #171b21;
+        --panel-2: #1e242c;
+        --border: #2a323d;
+        --text: #e6eaf0;
+        --muted: #93a0b0;
+        --accent: #6aa9ff;
+        --ok: #4ec9a5;
+        --warn: #e0b055;
+        --err: #e86b6b;
+        --radius: 10px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      a { color: var(--accent); }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        flex-wrap: wrap;
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.2px; }
+      header .sub { color: var(--muted); font-size: 13px; }
+      main { padding: 24px; max-width: 1200px; margin: 0 auto; display: grid; gap: 24px; }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      section > h2 {
+        margin: 0;
+        padding: 14px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        justify-content: space-between;
+      }
+      section > .body { padding: 18px; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+      .card {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+      }
+      .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+      .card .value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+      .card .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+      .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+      .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+      .pill.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 7px 13px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      button.primary { background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); border-color: var(--accent); color: #fff; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      textarea {
+        width: 100%;
+        min-height: 380px;
+        resize: vertical;
+        background: #0b0e12;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        tab-size: 2;
+      }
+      textarea:focus { outline: none; border-color: var(--accent); }
+      .list { display: grid; gap: 10px; }
+      .item {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        display: grid;
+        gap: 8px;
+      }
+      .item .title { font-weight: 600; }
+      .item .meta { color: var(--muted); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+      .item .desc { color: var(--muted); font-size: 13px; max-height: 3.2em; overflow: hidden; }
+      .empty { color: var(--muted); font-style: italic; }
+      pre.logs {
+        margin: 0;
+        max-height: 320px;
+        overflow: auto;
+        background: #0b0e12;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+      .msg { font-size: 13px; }
+      .msg.ok { color: var(--ok); }
+      .msg.err { color: var(--err); }
+      .cover { width: 44px; height: 66px; object-fit: cover; border-radius: 4px; background: var(--panel); }
+      .item-grid { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: start; }
+      select {
+        font: inherit;
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 6px 10px;
+      }
+      .tabs { display: flex; gap: 6px; }
+      .tabs button.active { border-color: var(--accent); color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>4read → Audiobookshelf</h1>
+      <span class="sub" id="header-sub">loading…</span>
+      <span class="row" id="header-pills" style="margin-left: auto"></span>
+    </header>
+
+    <main>
+      <section>
+        <h2>
+          Стан
+          <span class="row">
+            <button id="btn-refresh">Оновити</button>
+          </span>
+        </h2>
+        <div class="body">
+          <div class="cards" id="status-cards"></div>
+          <div class="row" style="margin-top: 16px">
+            <button data-job="seed">Засіяти автори/диктори</button>
+            <button data-job="sitemap">Синхронізувати sitemap</button>
+            <button data-job="backfill">Довантажити деталі</button>
+            <button data-job="subscriptions">Перевірити підписки</button>
+            <button data-job="sync" class="primary">Синхронізувати з ABS</button>
+          </div>
+          <div class="msg" id="job-msg" style="margin-top: 10px"></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>
+          Новинки за підписками
+          <span class="tabs" id="queue-tabs">
+            <button data-state="new" class="active">Нові</button>
+            <button data-state="accepted">Прийняті</button>
+            <button data-state="ignored">Проігноровані</button>
+            <button data-state="all">Усі</button>
+          </span>
+        </h2>
+        <div class="body"><div class="list" id="queue-list"></div></div>
+      </section>
+
+      <section>
+        <h2>
+          Книги ABS без відповідності
+          <button id="btn-unmatched">Завантажити</button>
+        </h2>
+        <div class="body"><div class="list" id="unmatched-list"><span class="empty">Натисніть «Завантажити».</span></div></div>
+      </section>
+
+      <section>
+        <h2>
+          Конфігурація
+          <span class="row">
+            <span class="msg" id="config-msg"></span>
+            <button id="btn-validate">Перевірити</button>
+            <button id="btn-save" class="primary">Зберегти</button>
+          </span>
+        </h2>
+        <div class="body">
+          <p class="msg" style="color: var(--muted); margin-top: 0">
+            YAML. Секрети (<code>ABS_URL</code>, <code>ABS_API_KEY</code>, <code>HARDCOVER_API_KEY</code>,
+            <code>FLARESOLVERR_URL</code>) задаються через змінні оточення й перекривають файл.
+          </p>
+          <textarea id="config-text" spellcheck="false"></textarea>
+        </div>
+      </section>
+
+      <section>
+        <h2>Журнал</h2>
+        <div class="body"><pre class="logs" id="logs"></pre></div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        const text = await response.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = { error: text };
+        }
+        if (!response.ok) throw new Error(data?.error ?? `HTTP ${response.status}`);
+        return data;
+      }
+
+      function pill(label, kind) {
+        const span = document.createElement("span");
+        span.className = `pill ${kind ?? ""}`.trim();
+        span.textContent = label;
+        return span;
+      }
+
+      function card(label, value, hint) {
+        const div = document.createElement("div");
+        div.className = "card";
+        div.innerHTML =
+          `<div class="label"></div><div class="value"></div>` + (hint ? `<div class="hint"></div>` : "");
+        div.querySelector(".label").textContent = label;
+        div.querySelector(".value").textContent = value;
+        if (hint) div.querySelector(".hint").textContent = hint;
+        return div;
+      }
+
+      function ago(iso) {
+        if (!iso) return "ніколи";
+        const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+        if (seconds < 90) return `${Math.round(seconds)} с тому`;
+        if (seconds < 5400) return `${Math.round(seconds / 60)} хв тому`;
+        if (seconds < 172800) return `${Math.round(seconds / 3600)} год тому`;
+        return `${Math.round(seconds / 86400)} дн тому`;
+      }
+
+      function duration(seconds) {
+        if (!seconds) return null;
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.round((seconds % 3600) / 60);
+        return hours > 0 ? `${hours} год ${minutes} хв` : `${minutes} хв`;
+      }
+
+      let statusCache = null;
+
+      async function loadStatus() {
+        const status = await api("/api/status");
+        statusCache = status;
+
+        const pills = $("header-pills");
+        pills.replaceChildren();
+        pills.append(
+          pill(
+            status.integrations.audiobookshelf ? "ABS підключено" : "ABS не налаштовано",
+            status.integrations.audiobookshelf ? "ok" : "warn",
+          ),
+        );
+        pills.append(pill(`FlareSolverr: ${status.fetch.flaresolverr}`, status.fetch.flaresolverr === "not configured" ? "warn" : "ok"));
+        if (status.integrations.hardcover) pills.append(pill("Hardcover", "ok"));
+        if (status.fetch.cooldownRemainingMs > 0) {
+          pills.append(pill(`Пауза ${Math.ceil(status.fetch.cooldownRemainingMs / 1000)} с`, "err"));
+        }
+
+        const running = status.jobs.filter((job) => job.running).map((job) => job.name);
+        $("header-sub").textContent = running.length
+          ? `виконується: ${running.join(", ")}`
+          : `запущено ${ago(status.startedAt)}`;
+
+        const cards = $("status-cards");
+        cards.replaceChildren();
+        cards.append(card("Книг у каталозі", status.catalog.books, `${status.catalog.booksDetailed} з деталями`));
+        cards.append(card("Черга деталей", status.catalog.booksPending, `sitemap: ${ago(status.timestamps.sitemapSyncedAt)}`));
+        cards.append(card("Авторів", status.catalog.authors, `${status.catalog.series} циклів`));
+        cards.append(card("Дикторів", status.catalog.narrators, `${status.preferredNarrators.length} улюблених`));
+        cards.append(
+          card("Новинок", status.queue.new ?? 0, `прийнято ${status.queue.accepted ?? 0}, синхр. ${status.queue.synced ?? 0}`),
+        );
+        cards.append(
+          card(
+            "Запитів до 4read",
+            status.fetch.requests,
+            `інтервал ${Math.round(status.fetch.intervalMs / 100) / 10} с, челенджів ${status.fetch.challenges}`,
+          ),
+        );
+        cards.append(card("Підписок", status.subscriptions.length, `остання синхр. ABS: ${ago(status.timestamps.syncRanAt)}`));
+        cards.append(
+          card("Staging", status.integrations.stagingPath, status.integrations.absLibraryPath ?? "бібліотека ABS не змонтована"),
+        );
+
+        for (const button of document.querySelectorAll("button[data-job]")) {
+          const job = status.jobs.find((entry) => entry.name === button.dataset.job);
+          button.disabled = Boolean(job?.running);
+        }
+
+        const failed = status.jobs.filter((job) => job.lastError);
+        $("job-msg").className = failed.length ? "msg err" : "msg";
+        $("job-msg").textContent = failed.length
+          ? failed.map((job) => `${job.name}: ${job.lastError}`).join(" | ")
+          : "";
+      }
+
+      async function loadLogs() {
+        const data = await api("/api/logs");
+        const element = $("logs");
+        const atBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 20;
+        element.textContent = data.lines.join("\n");
+        if (atBottom) element.scrollTop = element.scrollHeight;
+      }
+
+      let queueState = "new";
+
+      async function loadQueue() {
+        const data = await api(`/api/queue?state=${encodeURIComponent(queueState)}`);
+        const list = $("queue-list");
+        list.replaceChildren();
+        if (data.entries.length === 0) {
+          const empty = document.createElement("span");
+          empty.className = "empty";
+          empty.textContent = "Порожньо.";
+          list.append(empty);
+          return;
+        }
+
+        for (const entry of data.entries) {
+          const book = entry.book;
+          const item = document.createElement("div");
+          item.className = "item";
+
+          const grid = document.createElement("div");
+          grid.className = "item-grid";
+
+          const cover = document.createElement("img");
+          cover.className = "cover";
+          cover.loading = "lazy";
+          cover.alt = "";
+          if (book?.cover_url) cover.src = book.cover_url;
+          grid.append(cover);
+
+          const middle = document.createElement("div");
+          const title = document.createElement("div");
+          title.className = "title";
+          title.textContent = book?.title || `#${entry.source_id}`;
+          middle.append(title);
+
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          const bits = [];
+          if (book?.authors?.length) bits.push(`Автор: ${book.authors.join(", ")}`);
+          if (book?.narrators?.length) bits.push(`Читає: ${book.narrators.join(", ")}`);
+          if (book?.series_name) bits.push(`Цикл: ${book.series_name}${book.series_seq ? ` #${book.series_seq}` : ""}`);
+          const length = duration(book?.duration_sec);
+          if (length) bits.push(length);
+          if (book?.rating) bits.push(`★ ${book.rating}`);
+          bits.push(entry.reason);
+          for (const text of bits) {
+            const span = document.createElement("span");
+            span.textContent = text;
+            meta.append(span);
+          }
+          middle.append(meta);
+
+          if (book?.description) {
+            const description = document.createElement("div");
+            description.className = "desc";
+            description.textContent = book.description;
+            middle.append(description);
+          }
+          grid.append(middle);
+
+          const actions = document.createElement("div");
+          actions.className = "row";
+          if (book?.url) {
+            const link = document.createElement("a");
+            link.href = book.url;
+            link.target = "_blank";
+            link.rel = "noreferrer";
+            link.textContent = "4read";
+            actions.append(link);
+          }
+          for (const [action, label] of [["accept", "Прийняти"], ["ignore", "Ігнорувати"], ["reset", "Скинути"]]) {
+            if (queueState === "new" && action === "reset") continue;
+            if (queueState === "accepted" && action === "accept") continue;
+            if (queueState === "ignored" && action === "ignore") continue;
+            const button = document.createElement("button");
+            button.textContent = label;
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                await api(`/api/queue/${entry.source_id}/${action}`, { method: "POST" });
+                await loadQueue();
+                await loadStatus();
+              } catch (error) {
+                alert(String(error));
+                button.disabled = false;
+              }
+            });
+            actions.append(button);
+          }
+          grid.append(actions);
+          item.append(grid);
+          list.append(item);
+        }
+      }
+
+      async function loadUnmatched() {
+        const list = $("unmatched-list");
+        list.replaceChildren();
+        const loading = document.createElement("span");
+        loading.className = "empty";
+        loading.textContent = "Завантаження…";
+        list.append(loading);
+
+        let data;
+        try {
+          data = await api("/api/unmatched");
+        } catch (error) {
+          loading.className = "msg err";
+          loading.textContent = String(error);
+          return;
+        }
+
+        list.replaceChildren();
+        if (data.items.length === 0) {
+          const empty = document.createElement("span");
+          empty.className = "empty";
+          empty.textContent = "Усі книги зіставлені.";
+          list.append(empty);
+          return;
+        }
+
+        for (const entry of data.items) {
+          const item = document.createElement("div");
+          item.className = "item";
+
+          const title = document.createElement("div");
+          title.className = "title";
+          title.textContent = entry.title || entry.itemId;
+          item.append(title);
+
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          for (const text of [entry.authors.join(", ") || "без автора", entry.path]) {
+            const span = document.createElement("span");
+            span.textContent = text;
+            meta.append(span);
+          }
+          item.append(meta);
+
+          const row = document.createElement("div");
+          row.className = "row";
+          if (entry.candidates.length === 0) {
+            const empty = document.createElement("span");
+            empty.className = "empty";
+            empty.textContent = "Немає кандидатів";
+            row.append(empty);
+          } else {
+            const select = document.createElement("select");
+            for (const candidate of entry.candidates) {
+              const option = document.createElement("option");
+              option.value = String(candidate.sourceId);
+              option.textContent = `${candidate.title} — ${candidate.authors.join(", ")} (${candidate.score})`;
+              select.append(option);
+            }
+            row.append(select);
+
+            const button = document.createElement("button");
+            button.textContent = "Зв'язати й записати";
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                await api("/api/link", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ sourceId: Number(select.value), itemId: entry.itemId }),
+                });
+                item.remove();
+                await loadStatus();
+              } catch (error) {
+                alert(String(error));
+                button.disabled = false;
+              }
+            });
+            row.append(button);
+          }
+          item.append(row);
+          list.append(item);
+        }
+      }
+
+      async function loadConfig() {
+        const data = await api("/api/config");
+        $("config-text").value = data.text;
+        $("config-msg").textContent = data.path;
+        $("config-msg").className = "msg";
+      }
+
+      $("btn-refresh").addEventListener("click", () => {
+        void loadStatus();
+        void loadQueue();
+        void loadLogs();
+      });
+
+      $("btn-validate").addEventListener("click", async () => {
+        const message = $("config-msg");
+        try {
+          const result = await api("/api/config/validate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: $("config-text").value }),
+          });
+          message.className = result.ok ? "msg ok" : "msg err";
+          message.textContent = result.ok ? "YAML коректний" : result.error;
+        } catch (error) {
+          message.className = "msg err";
+          message.textContent = String(error);
+        }
+      });
+
+      $("btn-save").addEventListener("click", async () => {
+        const message = $("config-msg");
+        const button = $("btn-save");
+        button.disabled = true;
+        try {
+          await api("/api/config", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: $("config-text").value }),
+          });
+          message.className = "msg ok";
+          message.textContent = "Збережено й перезавантажено";
+          await loadStatus();
+        } catch (error) {
+          message.className = "msg err";
+          message.textContent = String(error);
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      $("btn-unmatched").addEventListener("click", () => void loadUnmatched());
+
+      for (const button of document.querySelectorAll("button[data-job]")) {
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            await api(`/api/jobs/${button.dataset.job}/run`, { method: "POST" });
+            $("job-msg").className = "msg ok";
+            $("job-msg").textContent = `Запущено: ${button.dataset.job}`;
+          } catch (error) {
+            $("job-msg").className = "msg err";
+            $("job-msg").textContent = String(error);
+            button.disabled = false;
+          }
+          await loadStatus();
+        });
+      }
+
+      for (const button of $("queue-tabs").querySelectorAll("button")) {
+        button.addEventListener("click", async () => {
+          for (const other of $("queue-tabs").querySelectorAll("button")) other.classList.remove("active");
+          button.classList.add("active");
+          queueState = button.dataset.state;
+          await loadQueue();
+        });
+      }
+
+      async function boot() {
+        await Promise.allSettled([loadStatus(), loadConfig(), loadQueue(), loadLogs()]);
+        setInterval(() => {
+          void loadStatus();
+          void loadLogs();
+        }, 5000);
+      }
+
+      void boot();
+    </script>
+  </body>
+</html>
