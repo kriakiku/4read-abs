@@ -38,7 +38,7 @@ Environment:
   LOG_LEVEL                debug | info | warn | error
 `;
 
-const VERSION = "0.1.7";
+const VERSION = "0.1.8";
 
 async function serve(ctx: AppContext): Promise<void> {
   const app = createApp(ctx);

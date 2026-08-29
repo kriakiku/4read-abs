@@ -66,31 +66,36 @@ export function parseM3u(body: string, baseUrl?: string): PlaylistTrack[] {
   return tracks;
 }
 
-function trackFileName(index: number, track: PlaylistTrack, total: number): string {
-  const width = Math.max(2, String(total).length);
-  const prefix = String(index + 1).padStart(width, "0");
-  let stem = track.title ? safeStem(track.title) : "";
-  if (!stem) {
-    try {
-      stem = safeStem(basename(new URL(track.url).pathname).replace(/\.[^.]+$/, "")) || `track-${prefix}`;
-    } catch {
-      stem = `track-${prefix}`;
-    }
-  }
-  let extension = ".mp3";
+function originalNameFromUrl(url: string): { stem: string; extension: string } {
   try {
-    const fromUrl = extname(new URL(track.url).pathname).toLowerCase();
-    if ([".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus"].includes(fromUrl)) extension = fromUrl;
+    // Query/hash must not leak into the local filename — only the path basename matters.
+    const path = new URL(url).pathname;
+    const base = basename(decodeURIComponent(path));
+    const extension = extname(base).toLowerCase();
+    const stem = safeStem(base.slice(0, base.length - extension.length));
+    const allowed = [".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus"];
+    return {
+      stem,
+      extension: allowed.includes(extension) ? extension : ".mp3",
+    };
   } catch {
-    // keep .mp3
+    return { stem: "", extension: ".mp3" };
   }
-  return `${prefix} - ${stem}${extension}`;
+}
+
+/** Local name: `0001-origName.mp3` (fixed 4-digit index; query params stripped from origName). */
+export function trackFileName(index: number, track: PlaylistTrack): string {
+  const prefix = String(index + 1).padStart(4, "0");
+  const fromUrl = originalNameFromUrl(track.url);
+  const stem = fromUrl.stem || (track.title ? safeStem(track.title) : "") || `track-${prefix}`;
+  return `${prefix}-${stem}${fromUrl.extension}`;
 }
 
 function safeStem(value: string): string {
   return value
     .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, " ")
     .replace(/\s+/g, " ")
+    .replace(/^[.\s]+|[.\s]+$/g, "")
     .trim()
     .slice(0, 80);
 }
@@ -138,7 +143,8 @@ async function fileLooksComplete(path: string, minBytes: number): Promise<boolea
 
 /**
  * Fetch `{DOWNLOAD_BASE}/m33u2/{slug}.m3u` and download each listed media file into `dir`
- * in playlist order (`01 - …mp3`, …). Soft-skips when the backend returns nothing useful.
+ * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
+ * Soft-skips when the backend returns nothing useful.
  */
 export async function ensureAudioFromPlaylist(
   book: BookWithPeople,
@@ -189,7 +195,7 @@ export async function ensureAudioFromPlaylist(
 
   for (let index = 0; index < tracks.length; index += 1) {
     const track = tracks[index]!;
-    const name = trackFileName(index, track, tracks.length);
+    const name = trackFileName(index, track);
     const path = join(dir, name);
     if (await fileLooksComplete(path, config.audio.minFileBytes)) {
       skipped += 1;

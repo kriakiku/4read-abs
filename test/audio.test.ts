@@ -3,7 +3,12 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configSchema } from "../src/config.ts";
-import { ensureAudioFromPlaylist, parseM3u, playlistUrlFor } from "../src/audio/m3u.ts";
+import {
+  ensureAudioFromPlaylist,
+  parseM3u,
+  playlistUrlFor,
+  trackFileName,
+} from "../src/audio/m3u.ts";
 import type { BookWithPeople } from "../src/catalog/store.ts";
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -83,6 +88,22 @@ https://cdn.example/c.mp3
       "http://audio.local/m33u2/mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u",
     );
   });
+
+  test("trackFileName uses 4-digit index and path basename, strips query", () => {
+    expect(
+      trackFileName(0, {
+        url: "https://cdn.example/path/Chapter%20One.mp3?sig=abc&exp=1",
+        title: "Ignored Title",
+      }),
+    ).toBe("0001-Chapter One.mp3");
+    expect(trackFileName(9, { url: "https://cdn.example/z.ogg#frag", title: null })).toBe(
+      "0010-z.ogg",
+    );
+    expect(trackFileName(0, { url: "https://cdn.example/noext?x=1", title: "Fallback" })).toBe(
+      "0001-noext.mp3",
+    );
+    expect(trackFileName(0, { url: "https://cdn.example/", title: null })).toBe("0001-track-0001.mp3");
+  });
 });
 
 describe("playlist audio fetch", () => {
@@ -98,7 +119,7 @@ describe("playlist audio fetch", () => {
           if (pathname.endsWith(".m3u")) {
             const base = `http://127.0.0.1:${origin.port}`;
             return new Response(
-              `#EXTM3U\n#EXTINF:-1,Part A\n${base}/a.mp3\n#EXTINF:-1,Part B\n${base}/b.mp3\n`,
+              `#EXTM3U\n#EXTINF:-1,Part A\n${base}/folder/a.mp3?token=1\n#EXTINF:-1,Part B\n${base}/b.mp3?sig=xyz\n`,
               { headers: { "content-type": "audio/x-mpegurl" } },
             );
           }
@@ -119,7 +140,7 @@ describe("playlist audio fetch", () => {
       expect(result?.tracks).toBe(2);
       expect(result?.downloaded).toBe(2);
       const names = (await readdir(target)).filter((n) => n.endsWith(".mp3")).sort();
-      expect(names).toEqual(["01 - Part A.mp3", "02 - Part B.mp3"]);
+      expect(names).toEqual(["0001-a.mp3", "0002-b.mp3"]);
       expect(await readFile(join(target, ".4read-audio-playlist"), "utf8")).toContain("/m33u2/");
 
       // Second run is a no-op.
