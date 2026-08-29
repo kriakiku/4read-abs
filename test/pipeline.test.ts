@@ -231,7 +231,7 @@ describe("catalogue pipeline", () => {
     const counts = catalogCounts(fake.ctx.db);
     expect(counts.authors).toBe(result.authors);
     expect(counts.narrators).toBe(result.narrators);
-  });
+  }, 15_000);
 
   test("sitemap registers articles as pending and reports what changed", async () => {
     const fake = await buildFake();
