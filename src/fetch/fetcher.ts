@@ -244,15 +244,14 @@ export class Fetcher {
       return { url, status: response.status, bytes, contentType };
     };
 
-    // Direct is worth one try when we already hold clearance; otherwise skip straight to the browser.
-    if (this.jar.hasClearance()) {
-      try {
-        const first = await attemptDirect();
-        if (first !== "challenged") return first;
-      } catch (error) {
-        if (error instanceof CooldownError) throw error;
-        log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
-      }
+    // Always try a direct download first. When Cloudflare blocks it, fall back to FlareSolverr's
+    // browser — Bun cannot reuse clearance cookies (different TLS fingerprint).
+    try {
+      const first = await attemptDirect();
+      if (first !== "challenged") return first;
+    } catch (error) {
+      if (error instanceof CooldownError) throw error;
+      log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
     }
 
     if (this.limiter.inCooldown()) {
