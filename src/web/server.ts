@@ -12,8 +12,7 @@ import { getMeta } from "../db.ts";
 import { recentLogs } from "../log.ts";
 import { backfillDetails, seedEntities, syncSitemap } from "../jobs/crawl.ts";
 import { listQueue, queueCounts, refreshQueue, setQueueState, deleteQueueEntry } from "../jobs/subscriptions.ts";
-import { listUnmatched, syncLibrary, syncSingle } from "../jobs/sync.ts";
-import { removeLink } from "../abs/matcher.ts";
+import { syncLibrary } from "../jobs/sync.ts";
 import { logger } from "../log.ts";
 
 const log = logger("web");
@@ -162,47 +161,6 @@ export function createApp(ctx: AppContext): Hono {
     const book = Number.isFinite(sourceId) ? getBook(ctx.db, sourceId) : null;
     if (!book) return c.json({ error: "not found" }, 404);
     return c.json({ book });
-  });
-
-  app.get("/api/search", (c) => {
-    const query = (c.req.query("q") ?? "").trim();
-    if (query.length < 2) return c.json({ results: [] });
-    const rows = ctx.db
-      .query<{ source_id: number }, [string]>(
-        `select b.source_id from books b
-         where b.detail_state = 'ok' and (lower(b.title) like ?1 or exists (
-           select 1 from book_authors ba join authors a on a.key = ba.author_key
-           where ba.source_id = b.source_id and lower(a.name) like ?1
-         ))
-         order by b.rating desc nulls last
-         limit 25`,
-      )
-      .all(`%${query.toLowerCase()}%`);
-    return c.json({ results: rows.map((row) => getBook(ctx.db, row.source_id)).filter(Boolean) });
-  });
-
-  app.get("/api/unmatched", async (c) => {
-    try {
-      return c.json({ items: await listUnmatched(ctx, 50) });
-    } catch (error) {
-      return c.json({ error: String(error) }, 502);
-    }
-  });
-
-  app.post("/api/link", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { sourceId?: number; itemId?: string } | null;
-    if (!body?.sourceId || !body.itemId) return c.json({ error: "expected { sourceId, itemId }" }, 400);
-    try {
-      const outcome = await syncSingle(ctx, body.sourceId, body.itemId);
-      return c.json({ ok: true, outcome });
-    } catch (error) {
-      return c.json({ error: String(error) }, 500);
-    }
-  });
-
-  app.delete("/api/link/:itemId", (c) => {
-    removeLink(ctx.db, c.req.param("itemId"));
-    return c.json({ ok: true });
   });
 
   app.post("/api/jobs/:name/run", (c) => {
