@@ -35,7 +35,7 @@ flaresolverr:
   # always: send everything through FlareSolverr
   # never: never use it
   mode: auto
-  maxTimeoutMs: 60000
+  maxTimeoutMs: 180000
   useSession: true
 
 audiobookshelf:

@@ -62,14 +62,19 @@ export interface SitemapResult {
  */
 export async function syncSitemap(ctx: AppContext): Promise<SitemapResult> {
   const base = ctx.config.source.baseUrl;
-  const index = await ctx.fetcher.getText(sitemapIndexUrl(base));
+  const indexUrl = sitemapIndexUrl(base);
+  log.info(`fetching sitemap index ${indexUrl}`);
+  const index = await ctx.fetcher.getText(indexUrl);
   const children = parseSitemapIndex(index.body).filter(isArticleSitemapUrl);
   const targets = children.length > 0 ? children : [`${base}/news_pages.xml`];
+  log.info(`sitemap index → ${targets.length} article sitemap(s): ${targets.join(", ")}`);
 
   const result: SitemapResult = { total: 0, added: 0, stale: 0 };
 
   for (const target of targets) {
+    log.info(`fetching article sitemap ${target}`);
     const page = await ctx.fetcher.getText(target);
+    log.info(`parsed ${target} (${page.body.length} bytes, via ${page.strategy})`);
     const entries = parseBookSitemap(page.body, base);
     const apply = ctx.db.transaction(() => {
       for (const entry of entries) {

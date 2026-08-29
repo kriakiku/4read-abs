@@ -3,7 +3,7 @@ import { loadConfig, type Config } from "./config.ts";
 import { openDb, type Db } from "./db.ts";
 import { HardcoverClient } from "./enrich/hardcover.ts";
 import { Fetcher } from "./fetch/fetcher.ts";
-import { setLogLevel } from "./log.ts";
+import { logger, setLogLevel } from "./log.ts";
 
 export interface JobStatus {
   name: string;
@@ -64,12 +64,17 @@ export class AppContext {
     status.running = true;
     status.startedAt = new Date().toISOString();
     status.lastError = null;
+    const jobLog = logger("job");
+    jobLog.info(`${name} started`);
+    const started = Date.now();
     try {
       const result = await task();
       status.lastResult = typeof result === "string" ? result : JSON.stringify(result);
+      jobLog.info(`${name} finished in ${Math.round((Date.now() - started) / 1000)}s`);
       return result;
     } catch (error) {
       status.lastError = String(error);
+      jobLog.warn(`${name} failed after ${Math.round((Date.now() - started) / 1000)}s: ${String(error)}`);
       throw error;
     } finally {
       status.running = false;

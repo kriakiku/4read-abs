@@ -59,6 +59,7 @@ export class Scheduler {
     const schedule = ctx.config.schedule;
 
     if (!getMeta(ctx.db, "seeded_at")) {
+      log.info("due: seed");
       await ctx.runJob("seed", () => seedEntities(ctx)).catch((error) => {
         log.warn(`seed failed: ${String(error)}`);
         return null;
@@ -66,6 +67,7 @@ export class Scheduler {
     }
 
     if (schedule.incrementalMinutes > 0 && minutesSince(getMeta(ctx.db, "sitemap_synced_at")) >= schedule.incrementalMinutes) {
+      log.info("due: sitemap + subscriptions");
       await ctx.runJob("sitemap", () => syncSitemap(ctx)).catch((error) => {
         log.warn(`sitemap sync failed: ${String(error)}`);
         return null;
@@ -76,11 +78,19 @@ export class Scheduler {
       });
     }
 
-    if (schedule.backfillEnabled && schedule.backfillBatch > 0 && !ctx.fetcher.limiter.inCooldown()) {
+    // Cooldown only blocks Bun→origin probes. With FlareSolverr configured, backfill can continue.
+    const backfillBlockedByCooldown =
+      ctx.fetcher.limiter.inCooldown() && !ctx.fetcher.flareConfigured;
+    if (schedule.backfillEnabled && schedule.backfillBatch > 0 && !backfillBlockedByCooldown) {
+      log.info(`due: backfill (batch ${schedule.backfillBatch})`);
       await ctx.runJob("backfill", () => backfillDetails(ctx, schedule.backfillBatch)).catch((error) => {
         log.warn(`backfill failed: ${String(error)}`);
         return null;
       });
+    } else if (schedule.backfillEnabled && backfillBlockedByCooldown) {
+      log.info(
+        `skipping backfill: origin cooldown another ${Math.round(ctx.fetcher.limiter.cooldownRemainingMs() / 1000)}s (no FlareSolverr)`,
+      );
     }
 
     if (
@@ -88,6 +98,7 @@ export class Scheduler {
       ctx.abs.configured &&
       minutesSince(getMeta(ctx.db, "sync_ran_at")) >= schedule.syncMinutes
     ) {
+      log.info("due: library sync");
       await ctx.runJob("sync", () => syncLibrary(ctx)).catch((error) => {
         log.warn(`library sync failed: ${String(error)}`);
         return null;
@@ -98,5 +109,7 @@ export class Scheduler {
       pruneFetchLog(ctx.db);
       setMeta(ctx.db, "pruned_at", new Date().toISOString());
     }
+
+    log.info("scheduler tick finished");
   }
 }
