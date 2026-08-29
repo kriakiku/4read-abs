@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppContext } from "../src/context.ts";
@@ -93,6 +93,16 @@ async function buildFake(options: { absItems?: unknown[] } = {}): Promise<Fake> 
           (c) => c.charCodeAt(0),
         );
         return new Response(jpeg, { headers: { "content-type": "image/jpeg" } });
+      }
+      if (pathname.startsWith("/m33u2/") && pathname.endsWith(".m3u")) {
+        const mp3 = `${originBase}audio/track.mp3`;
+        return new Response(`#EXTM3U\n#EXTINF:-1,Track\n${mp3}\n`, {
+          headers: { "content-type": "audio/x-mpegurl" },
+        });
+      }
+      if (pathname.startsWith("/audio/") && pathname.endsWith(".mp3")) {
+        const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => i % 256);
+        return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
       }
       return new Response("not found", { status: 404 });
     },
@@ -435,6 +445,32 @@ describe("audiobookshelf sync", () => {
     const written = JSON.parse(await readFile(join(folder, "metadata.json"), "utf8"));
     expect(written.title).toBe("Всі молоді чуваки: Перший рік");
     expect(written.series).toEqual(["All the Young Dudes #1"]);
+    const mp3s = (await readdir(folder)).filter((name) => name.endsWith(".mp3"));
+    expect(mp3s).toEqual(["0001-track.mp3"]);
+  });
+
+  test("prepared folders without media get audio on the next sync", async () => {
+    const fake = await buildFake({ absItems: [] });
+    await syncSitemap(fake.ctx);
+    await backfillDetails(fake.ctx, 10);
+    await refreshQueue(fake.ctx);
+
+    const folder = join(
+      fake.dir,
+      "library",
+      "MsKingBean89",
+      "All the Young Dudes",
+      "1 - Всі молоді чуваки Перший рік",
+    );
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, "metadata.json"), JSON.stringify({ title: "stub" }));
+    await writeFile(join(folder, "cover.jpg"), "cover");
+    setQueueState(fake.ctx, 6840, "prepared", folder);
+
+    fake.ctx.config.sync.createFolders = true;
+    const result = await syncLibrary(fake.ctx);
+    expect(result.created).toBe(1);
+    expect((await readdir(folder)).filter((name) => name.endsWith(".mp3"))).toEqual(["0001-track.mp3"]);
   });
 });
 

@@ -22,6 +22,18 @@ export function isMediaFile(path: string): boolean {
   return MEDIA_EXTENSIONS.has(extname(path).toLowerCase());
 }
 
+/** True when `dir` already holds at least one Audiobookshelf media file. */
+export async function folderHasMedia(dir: string): Promise<boolean> {
+  try {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.isFile() && isMediaFile(entry.name)) return true;
+    }
+  } catch {
+    // Missing folder = no media yet.
+  }
+  return false;
+}
+
 export interface StagedBook {
   dir: string;
   metadataPath: string;
