@@ -170,13 +170,11 @@ export const configSchema = z.object({
     .object({
       /** Sitemap poll interval. Zero disables the timer. */
       incrementalMinutes: z.number().int().min(0).default(60),
-      /** Slowly fetch detail pages. Off for unrelated sitemap entries unless backfillAll. */
-      backfillEnabled: z.boolean().default(true),
       /**
-       * When false (default), only fetch details for books that match a subscription or are
-       * already in the news queue. When true, walk the whole pending catalogue by lastmod.
+       * Slowly fetch detail pages for subscription matches and queued books only.
+       * The full sitemap catalogue is never detail-crawled.
        */
-      backfillAll: z.boolean().default(false),
+      backfillEnabled: z.boolean().default(true),
       backfillBatch: z.number().int().min(0).default(25),
       syncMinutes: z.number().int().min(0).default(180),
     })
