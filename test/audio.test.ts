@@ -414,6 +414,21 @@ describe("playlist audio fetch", () => {
           return Response.json({ status: "ok", session: "s1" });
         }
         const target = String(payload.url ?? "");
+        const js = String(payload.executeJs ?? "");
+        // Track bytes: same-origin executeJs from CDN origin after warmHost.
+        if (js.includes("arrayBuffer")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: "<html><body>cdn</body></html>",
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              executeJsResult: Buffer.from(mp3).toString("base64"),
+            },
+          });
+        }
         if (payload.download && target.includes(".mp3")) {
           return Response.json({
             status: "ok",
@@ -443,21 +458,24 @@ describe("playlist audio fetch", () => {
             },
           });
         }
-        if (target.includes(".html")) {
-          // Track download via executeJs from the book page (Referer for CDN).
-          if (String(payload.executeJs ?? "").includes("arrayBuffer")) {
+        // CDN warm: GET http://host/
+        try {
+          if (new URL(target).pathname === "/") {
             return Response.json({
               status: "ok",
               solution: {
                 url: target,
                 status: 200,
-                response: "<html><body>book</body></html>",
+                response: "<html><body>cdn root</body></html>",
                 cookies: [],
                 userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-                executeJsResult: Buffer.from(mp3).toString("base64"),
               },
             });
           }
+        } catch {
+          // continue
+        }
+        if (target.includes(".html")) {
           return Response.json({
             status: "ok",
             solution: {
@@ -553,21 +571,21 @@ describe("playlist audio fetch", () => {
           return Response.json({ status: "ok", session: "s1" });
         }
         const target = String(payload.url ?? "");
+        const js = String(payload.executeJs ?? "");
+        if (js.includes("arrayBuffer")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: "<html><body>cdn</body></html>",
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              executeJsResult: Buffer.from(mp3).toString("base64"),
+            },
+          });
+        }
         if (target.includes(".html")) {
-          const js = String(payload.executeJs ?? "");
-          if (js.includes("arrayBuffer")) {
-            return Response.json({
-              status: "ok",
-              solution: {
-                url: target,
-                status: 200,
-                response: "<html><body>book</body></html>",
-                cookies: [],
-                userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-                executeJsResult: Buffer.from(mp3).toString("base64"),
-              },
-            });
-          }
           const base = `http://127.0.0.1:${origin.port}`;
           expect(js).toContain("m33u2");
           return Response.json({
@@ -581,6 +599,22 @@ describe("playlist audio fetch", () => {
               executeJsResult: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
             },
           });
+        }
+        try {
+          if (new URL(target).pathname === "/") {
+            return Response.json({
+              status: "ok",
+              solution: {
+                url: target,
+                status: 200,
+                response: "<html><body>cdn root</body></html>",
+                cookies: [],
+                userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              },
+            });
+          }
+        } catch {
+          // continue
         }
         if (payload.download && target.includes(".mp3")) {
           return Response.json({
@@ -648,6 +682,20 @@ describe("playlist audio fetch", () => {
           return Response.json({ status: "ok", session: "s1" });
         }
         const target = String(payload.url ?? "");
+        const js = String(payload.executeJs ?? "");
+        if (js.includes("arrayBuffer")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: "<html><body>cdn</body></html>",
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              executeJsResult: Buffer.from(mp3).toString("base64"),
+            },
+          });
+        }
         if (payload.download && target.includes(".mp3")) {
           return Response.json({
             status: "ok",
@@ -693,20 +741,23 @@ describe("playlist audio fetch", () => {
             },
           });
         }
-        if (target.includes(".html")) {
-          if (String(payload.executeJs ?? "").includes("arrayBuffer")) {
+        try {
+          if (new URL(target).pathname === "/") {
             return Response.json({
               status: "ok",
               solution: {
                 url: target,
                 status: 200,
-                response: "<html><body>book</body></html>",
+                response: "<html><body>cdn root</body></html>",
                 cookies: [],
                 userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-                executeJsResult: Buffer.from(mp3).toString("base64"),
               },
             });
           }
+        } catch {
+          // continue
+        }
+        if (target.includes(".html")) {
           return Response.json({
             status: "ok",
             solution: {
@@ -746,11 +797,10 @@ describe("playlist audio fetch", () => {
     expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".m3u"))).toBe(
       true,
     );
-    // Tracks are fetched in-page from the book HTML (Chrome sends Referer for CDN hotlink).
+    // Tracks: warm CDN origin, then same-origin executeJs fetch (not cross-origin from book HTML).
     expect(
       flareRequests.some(
-        (r) =>
-          String(r.url ?? "").includes(".html") && String(r.executeJs ?? "").includes("arrayBuffer"),
+        (r) => String(r.executeJs ?? "").includes("arrayBuffer"),
       ),
     ).toBe(true);
     expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);

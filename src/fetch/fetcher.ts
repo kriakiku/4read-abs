@@ -494,16 +494,22 @@ export class Fetcher {
     try {
       let file: Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>> = null;
       if (purpose === "media") {
-        const pageUrl = options.referer;
-        const canExecuteFromPage =
-          Boolean(pageUrl) && /^https?:\/\//i.test(pageUrl!) && !/\.m3u(\?|$)/i.test(pageUrl!);
-        // Prefer in-page fetch so Chrome sends Referer (reasd.org hotlink-protects otherwise).
-        if (canExecuteFromPage) {
-          file = await this.flare.fetchViaPageExecuteJs(pageUrl!, url, {
+        // 1) Solve CF on the CDN host (reasd.org) in this Chrome session.
+        await this.flare.warmHost(url);
+        let cdnOrigin: string | null = null;
+        try {
+          cdnOrigin = new URL(url).origin;
+        } catch {
+          cdnOrigin = null;
+        }
+        // 2) Same-origin executeJs from the CDN (avoids CORS Failed to fetch from 4read HTML).
+        if (cdnOrigin) {
+          file = await this.flare.fetchViaPageExecuteJs(`${cdnOrigin}/`, url, {
             cookies: this.jar.list(),
             minBytes: this.config.audio.minFileBytes,
           });
         }
+        // 3) download:true with CDN clearance cookies already in the session.
         if (!file) {
           file = await this.flare.fetchDownload(url, {
             cookies: this.jar.list(),
@@ -516,8 +522,9 @@ export class Fetcher {
       }
       const ms = (Bun.nanoseconds() - started) / 1e6;
       if (!file) {
-        this.limiter.recordChallenge();
-        this.record(url, "flaresolverr", null, false, true, ms, "no file bytes");
+        // Do not burn the challenge budget on CDN/media misses — that paused crawls for 10m.
+        this.limiter.recordFailure();
+        this.record(url, "flaresolverr", null, false, false, ms, "no file bytes");
         throw new ChallengeError(url);
       }
       this.limiter.recordSuccess();

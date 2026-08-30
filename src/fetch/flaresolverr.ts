@@ -76,6 +76,8 @@ export class FlareSolverrClient {
   private gate: Promise<void> = Promise.resolve();
   /** Stock FlareSolverr v2 removed `download: true`; stop retrying after first miss. */
   private downloadSupported: boolean | null = null;
+  /** Origins already challenge-solved in this Chrome session (e.g. https://reasd.org). */
+  private warmedHosts = new Set<string>();
 
   constructor(
     private readonly endpoint: string,
@@ -291,9 +293,33 @@ export class FlareSolverrClient {
   }
 
   /**
-   * Load `pageUrl` in Chrome, then `fetch(fileUrl)` in-page so the browser sends a real
-   * Referer (flaresolverr-go cannot set the Referer header). Returns file bytes as base64
-   * via executeJsResult — used for CDN mp3s that hotlink-protect without a document Referer.
+   * Solve Cloudflare (if any) for a media CDN origin inside the Chrome session so later
+   * `download: true` / same-origin executeJs carry that host's clearance cookies.
+   * Cross-origin `fetch()` from the 4read book page fails CORS (`Failed to fetch`).
+   */
+  async warmHost(url: string): Promise<boolean> {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return false;
+    }
+    if (this.warmedHosts.has(origin)) return true;
+    try {
+      log.info(`Chrome warm CDN origin ${origin}`);
+      const result = await this.get(`${origin}/`);
+      this.warmedHosts.add(origin);
+      log.info(`Chrome warm CDN origin done → HTTP ${result.status}`);
+      return true;
+    } catch (error) {
+      log.warn(`Chrome warm CDN origin failed for ${origin}: ${String(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Load `pageUrl` in Chrome, then `fetch(fileUrl)` in-page (must be same-origin or CORS-ok).
+   * Used after `warmHost` so we fetch the mp3 from the CDN origin itself.
    */
   async fetchViaPageExecuteJs(
     pageUrl: string,
