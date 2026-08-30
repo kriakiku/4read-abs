@@ -162,6 +162,9 @@ export class Fetcher {
    * Hit the article HTML in Chrome so cookies settle. Optionally run `executeJs` to
    * `fetch()` the playlist URL in-page (same TLS + cookies as the solved challenge) —
    * this is how stock-incompatible m3u works on flaresolverr-go / executeJs builds.
+   *
+   * Do not wait for the in-page Playerjs: signed CDN mp3 links are single-use / short-lived
+   * and the player will burn them. flaresolverr-go `disableMedia` + executeJs blockers stop that.
    */
   async warmBookPage(
     pageUrl: string,
@@ -170,8 +173,10 @@ export class Fetcher {
     try {
       return await this.getText(pageUrl, {
         chrome: true,
-        waitInSeconds: this.flareConfigured ? 2 : undefined,
+        // No waitInSeconds: flaresolverr-go waits AFTER executeJs; that pause let Playerjs
+        // start track downloads and invalidate md5/expires URLs before our getBinary.
         recordHar: this.flareConfigured,
+        disableMedia: this.flareConfigured,
         executeJs: options.fetchPlaylistUrl
           ? playlistFetchExecuteJs(options.fetchPlaylistUrl)
           : undefined,
@@ -200,6 +205,8 @@ export class Fetcher {
       chrome?: boolean;
       waitInSeconds?: number;
       recordHar?: boolean;
+      /** flaresolverr-go: block Media (and images/CSS/fonts) during this navigation. */
+      disableMedia?: boolean;
       executeJs?: string;
     } = {},
   ): Promise<TextResult> {
@@ -277,6 +284,7 @@ export class Fetcher {
         headers: flareHeadersFrom(headers),
         waitInSeconds: options.waitInSeconds,
         recordHar: options.recordHar,
+        disableMedia: options.disableMedia,
         executeJs: options.executeJs,
       });
       const ms = (Bun.nanoseconds() - started) / 1e6;
@@ -579,9 +587,25 @@ export function flareHeadersFrom(headers: Record<string, string>): Record<string
 /** Only headers flaresolverr-go accepts on request.get (Go forbids Referer, sec-*, Cookie, Host, …). */
 const FLARE_HEADER_ALLOW = new Set(["accept", "accept-language", "accept-encoding"]);
 
-/** In-page fetch of the m3u while still on the book origin (CF already cleared). */
+/**
+ * In-page fetch of the m3u while still on the book origin (CF already cleared).
+ * First stops Playerjs / patches fetch+XHR so `.mp3` and `reasd.org` cannot be requested —
+ * otherwise the embed player starts track 1 and invalidates signed CDN URLs in the playlist.
+ */
 export function playlistFetchExecuteJs(playlistUrl: string): string {
-  return `return fetch(${JSON.stringify(playlistUrl)},{credentials:"include",headers:{"Accept":"*/*"}}).then(function(r){return r.text();})`;
+  const urlLit = JSON.stringify(playlistUrl);
+  return (
+    `var __absPl=${urlLit};` +
+    `function __absBlock(u){u=String(u||"");return /\\.(mp3|m4a|m4b|flac|ogg|opus)(\\?|$)/i.test(u)||/reasd\\.org/i.test(u);}` +
+    `try{` +
+    `var __f=window.fetch;window.fetch=function(i,n){var u=typeof i==="string"?i:(i&&i.url)||"";if(__absBlock(u))return Promise.reject(new Error("blocked-media"));return __f.apply(this,arguments);};` +
+    `var __xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){this.__absBlock=__absBlock(u);return __xo.apply(this,arguments);};` +
+    `var __xs=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){if(this.__absBlock)return;return __xs.apply(this,arguments);};` +
+    `window.Playerjs=function(){return{api:function(){}};};` +
+    `document.querySelectorAll("audio,video").forEach(function(el){try{el.pause();el.removeAttribute("src");el.load();}catch(e){}});` +
+    `}catch(e){}` +
+    `return fetch(__absPl,{credentials:"include",headers:{"Accept":"*/*"}}).then(function(r){return r.text();})`
+  );
 }
 
 function playlistBodyFromExecuteJs(raw: string | undefined): string | null {

@@ -156,10 +156,15 @@ export class FlareSolverrClient {
     options: {
       cookies?: StoredCookie[];
       headers?: Record<string, string>;
-      /** Extra seconds after the challenge so the player can fire its m3u request. */
+      /** Extra seconds after challenge + executeJs (flaresolverr-go runs wait last). */
       waitInSeconds?: number;
       /** Ask Chrome to record a HAR (supported on some FlareSolverr builds). */
       recordHar?: boolean;
+      /**
+       * Block images/CSS/fonts/Media at CDP level (flaresolverr-go). Use on book HTML
+       * so Playerjs cannot start burning signed CDN mp3 URLs while we fetch the m3u.
+       */
+      disableMedia?: boolean;
       /**
        * JS to run in the solved page (flaresolverr-go / FlareSolverr executeJs builds).
        * Result lands in `executeJsResult`. Stock FlareSolverr ignores the field.
@@ -185,6 +190,9 @@ export class FlareSolverrClient {
     }
     if (options.recordHar) {
       extra.recordHar = true;
+    }
+    if (options.disableMedia) {
+      extra.disableMedia = true;
     }
     if (options.executeJs) {
       extra.executeJs = options.executeJs;

@@ -14,7 +14,7 @@ import {
   trackFileName,
 } from "../src/audio/m3u.ts";
 import type { BookWithPeople } from "../src/catalog/store.ts";
-import { Fetcher } from "../src/fetch/fetcher.ts";
+import { Fetcher, playlistFetchExecuteJs } from "../src/fetch/fetcher.ts";
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 const fetchers: Fetcher[] = [];
@@ -132,6 +132,15 @@ https://cdn.example/c.mp3
         config,
       ),
     ).toBe("https://4read.org/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u");
+  });
+
+  test("playlist executeJs blocks Playerjs media before fetching m3u", () => {
+    const js = playlistFetchExecuteJs("https://4read.org/m33u2/1-book.m3u");
+    expect(js).toContain("blocked-media");
+    expect(js).toContain("Playerjs");
+    expect(js).toContain("reasd\\.org");
+    expect(js).toContain("https://4read.org/m33u2/1-book.m3u");
+    expect(js).toContain("return fetch(__absPl");
   });
 
   test("returns null when the book has no slug or id", () => {
@@ -652,6 +661,15 @@ describe("playlist audio fetch", () => {
     const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
     expect(result?.downloaded).toBe(1);
     expect(flareRequests.some((r) => typeof r.executeJs === "string")).toBe(true);
+    const bookWarm = flareRequests.find(
+      (r) =>
+        typeof r.executeJs === "string" &&
+        String(r.executeJs).includes("blocked-media") &&
+        !String(r.executeJs).includes("arrayBuffer"),
+    );
+    expect(bookWarm).toBeTruthy();
+    expect(bookWarm?.disableMedia).toBe(true);
+    expect(bookWarm?.waitInSeconds).toBeUndefined();
     // No separate m3u download/navigate — body came from executeJs on the HTML request.
     expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(false);
   });
