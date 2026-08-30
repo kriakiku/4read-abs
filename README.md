@@ -347,12 +347,13 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 ## Аудіо з плейлистів 4read
 
 Після **Accept** Chrome: HTML книги (глушимо Playerjs) → **головна 4read.org/**
-(без плеєра) → `executeJs` fetch m3u → для кожного треку знову головна (Referer) +
-`download:true`. Весь аудіо-пайплайн серіалізований (`runExclusiveAudio`): паралельні
-Accept не перемикають Chrome між книгами. Файли: `0001-origName.mp3`, …
+(без плеєра) → `executeJs` fetch m3u. Треки з CDN (`reasd.org`) — **звичайний nginx
+hotlink** (не Cloudflare): Bun GET з `Referer: https://4read.org/`. Не через
+FlareSolverr `download:true` (другий fetch губить Referer → nginx 403 HTML ~2966 B).
+Весь аудіо-пайплайн серіалізований (`runExclusiveAudio`). Файли: `0001-origName.mp3`, …
 Повторний sync пропускає вже скачані треки (маркер `.4read-audio-playlist`).
 
-**Потрібен FlareSolverr з `download`/`executeJs`** (compose вже ставить
+**Для m3u потрібен FlareSolverr з `executeJs`** (compose вже ставить
 `rorqualx/flaresolverr-go`). Stock `ghcr.io/flaresolverr/flaresolverr` для m3u
 недостатній.
 

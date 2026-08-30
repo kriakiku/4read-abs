@@ -513,11 +513,18 @@ describe("playlist audio fetch", () => {
     const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => (i + 7) % 256);
     const flareRequests: Array<Record<string, unknown>> = [];
     const originHits: string[] = [];
+    const mp3Referers: string[] = [];
 
     const origin = Bun.serve({
       port: 0,
       fetch(request): Response {
-        originHits.push(new URL(request.url).pathname);
+        const pathname = new URL(request.url).pathname;
+        originHits.push(pathname);
+        // Tracks: Bun direct + Referer (CDN is nginx hotlink, not CF / not Flare download).
+        if (pathname.endsWith(".mp3")) {
+          mp3Referers.push(request.headers.get("referer") ?? "");
+          return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
+        }
         return new Response("should-not-hit-origin-for-m3u", { status: 500 });
       },
     });
@@ -536,7 +543,6 @@ describe("playlist audio fetch", () => {
         }
         const target = String(payload.url ?? "");
         const js = String(payload.executeJs ?? "");
-        // Track bytes: same-origin executeJs no longer used for CDN (403 hotlink).
         if (js.includes("arrayBuffer")) {
           return Response.json({
             status: "ok",
@@ -547,22 +553,6 @@ describe("playlist audio fetch", () => {
               cookies: [],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
               executeJsResult: "Error:HTTP 403",
-            },
-          });
-        }
-        if (payload.download && target.includes(".mp3")) {
-          return Response.json({
-            status: "ok",
-            solution: {
-              url: target,
-              status: 200,
-              cookies: [],
-              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              download: {
-                filename: "a.mp3",
-                mime: "audio/mpeg",
-                data: Buffer.from(mp3).toString("base64"),
-              },
             },
           });
         }
@@ -676,6 +666,11 @@ describe("playlist audio fetch", () => {
     expect(chromeUrls.some((u) => u.endsWith("/") || new URL(u).pathname === "/")).toBe(true);
     // m3u body came from homepage executeJs — no Bun hit on .m3u
     expect(originHits.some((p) => p.endsWith(".m3u"))).toBe(false);
+    expect(originHits.some((p) => p.endsWith(".mp3"))).toBe(true);
+    expect(mp3Referers[0]).toContain(`http://127.0.0.1:${origin.port}/`);
+    expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".mp3"))).toBe(
+      false,
+    );
     expect(fetcher.jar.phpSessionId()).toBeTruthy();
   });
 
@@ -812,19 +807,30 @@ describe("playlist audio fetch", () => {
     expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(false);
   });
 
-  test("falls back to FlareSolverr Chrome download for challenged media", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "4read-audio-flare-"));
+  test("CDN tracks use Bun + homepage Referer (not Flare download:true)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-cdn-direct-"));
     tempDirs.push(dir);
     const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => (i + 7) % 256);
     const flareRequests: Array<Record<string, unknown>> = [];
+    const mp3Referers: string[] = [];
 
     const origin = Bun.serve({
       port: 0,
-      fetch(): Response {
-        return new Response("<html>Just a moment...<script>window._cf_chl_opt=1</script></html>", {
-          status: 403,
-          headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
-        });
+      fetch(request): Response {
+        const pathname = new URL(request.url).pathname;
+        // Simulate nginx hotlink: mp3 only with Referer from this site.
+        if (pathname.endsWith(".mp3")) {
+          const referer = request.headers.get("referer") ?? "";
+          mp3Referers.push(referer);
+          if (!referer.includes(`127.0.0.1:${origin.port}`)) {
+            return new Response(
+              `<!DOCTYPE html><html lang="en"><head><title>Page Not Found</title></head><body>403</body></html>`,
+              { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
+            );
+          }
+          return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
+        }
+        return new Response("use flare for html/m3u", { status: 500 });
       },
     });
     servers.push(origin);
@@ -842,64 +848,6 @@ describe("playlist audio fetch", () => {
         }
         const target = String(payload.url ?? "");
         const js = String(payload.executeJs ?? "");
-        if (js.includes("arrayBuffer")) {
-          return Response.json({
-            status: "ok",
-            solution: {
-              url: target,
-              status: 200,
-              response: "<html><body>cdn</body></html>",
-              cookies: [],
-              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              executeJsResult: "Error:HTTP 403",
-            },
-          });
-        }
-        if (payload.download && target.includes(".mp3")) {
-          return Response.json({
-            status: "ok",
-            solution: {
-              url: target,
-              status: 200,
-              cookies: [],
-              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              download: {
-                filename: "a.mp3",
-                mime: "audio/mpeg",
-                data: Buffer.from(mp3).toString("base64"),
-              },
-            },
-          });
-        }
-        if (payload.download && target.includes(".m3u")) {
-          const base = `http://127.0.0.1:${origin.port}`;
-          const m3u = `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`;
-          return Response.json({
-            status: "ok",
-            solution: {
-              url: target,
-              status: 200,
-              cookies: [],
-              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              // flaresolverr-go shape
-              response: Buffer.from(m3u).toString("base64"),
-              responseEncoding: "base64",
-            },
-          });
-        }
-        if (target.includes(".m3u")) {
-          // Simulate stock Chrome navigate: returns previous HTML page, not the playlist.
-          return Response.json({
-            status: "ok",
-            solution: {
-              url: target,
-              status: 200,
-              response: "<html><body>book page not m3u</body></html>",
-              cookies: [],
-              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-            },
-          });
-        }
         try {
           if (new URL(target).pathname === "/") {
             const base = `http://127.0.0.1:${origin.port}`;
@@ -921,7 +869,7 @@ describe("playlist audio fetch", () => {
               solution: {
                 url: target,
                 status: 200,
-                response: "<html><body>cdn root</body></html>",
+                response: "<html><body>home</body></html>",
                 cookies: [],
                 userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
               },
@@ -947,7 +895,7 @@ describe("playlist audio fetch", () => {
     });
     servers.push(flare);
 
-    const dbDir = await mkdtemp(join(tmpdir(), "4read-audio-flare-db-"));
+    const dbDir = await mkdtemp(join(tmpdir(), "4read-audio-cdn-direct-db-"));
     tempDirs.push(dbDir);
     const db = openDb(dbDir);
     const config = configSchema.parse({
@@ -967,18 +915,14 @@ describe("playlist audio fetch", () => {
     const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
     expect(result?.downloaded).toBe(1);
     expect(await readdir(target)).toContain("0001-a.mp3");
-    // Tracks: warm CDN, land homepage (Referer), download:true
-    expect(flareRequests.some((r) => r.cmd === "sessions.create" && typeof r.session === "string")).toBe(
-      true,
-    );
+    expect(mp3Referers[0]).toBe(`http://127.0.0.1:${origin.port}/`);
     expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".mp3"))).toBe(
-      true,
+      false,
     );
     expect(
       flareRequests.some(
         (r) => typeof r.executeJs === "string" && String(r.executeJs).includes("m33u2"),
       ),
     ).toBe(true);
-    expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);
   });
 });

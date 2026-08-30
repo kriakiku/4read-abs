@@ -519,32 +519,34 @@ export class Fetcher {
   }
 
   /**
-   * Fetch binary content (covers, audio tracks, …). Bun's TLS fingerprint cannot reuse
-   * FlareSolverr clearance cookies, so a challenged direct download falls back to fetching
-   * inside FlareSolverr's Chrome (download API; image URLs may also use a screenshot).
+   * Fetch binary content (covers, audio tracks, …).
+   *
+   * Audio CDN (`reasd.org`) is plain nginx with Referer hotlink checks — not Cloudflare.
+   * Bun GET with `Referer: https://4read.org/` works; FlareSolverr `download:true` navigates
+   * then re-fetches and the second request loses the site Referer → nginx 403 HTML (~2966 bytes).
+   *
+   * Covers on the source host still escalate to FlareSolverr when Bun's TLS is challenged.
    */
   async getBinary(
     url: string,
     options: { referer?: string; purpose?: "image" | "media" } = {},
   ): Promise<BinaryResult> {
+    const purpose = options.purpose ?? "image";
+    if (purpose === "media") {
+      return this.downloadMediaDirect(url, options.referer);
+    }
+
     if (this.limiter.inCooldown() && !this.flareConfigured) {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
-
-    const purpose = options.purpose ?? "image";
 
     const attemptDirect = async (): Promise<BinaryResult | "challenged"> => {
       await this.limiter.acquire();
 
       const started = Bun.nanoseconds();
       const headers = this.browserHeaders({ referer: options.referer });
-      if (purpose === "media") {
-        headers.accept = "audio/mpeg,audio/*,application/octet-stream,*/*;q=0.8";
-        headers["sec-fetch-dest"] = "audio";
-      } else {
-        headers.accept = "image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8";
-        headers["sec-fetch-dest"] = "image";
-      }
+      headers.accept = "image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8";
+      headers["sec-fetch-dest"] = "image";
       headers["sec-fetch-mode"] = "no-cors";
       headers["sec-fetch-site"] = "same-origin";
       delete headers["upgrade-insecure-requests"];
@@ -557,7 +559,7 @@ export class Fetcher {
       });
       const contentType = response.headers.get("content-type");
       const ms = (Bun.nanoseconds() - started) / 1e6;
-      this.jar.absorbSetCookie(response.headers);
+      this.jar.absorbSetCookie(response.headers, url);
 
       if (response.status === 403 || response.status === 503 || response.status === 429) {
         this.record(url, "direct", response.status, false, true, ms);
@@ -568,7 +570,6 @@ export class Fetcher {
         throw new Error(`HTTP ${response.status} for ${url}`);
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
-      // Cloudflare sometimes returns an HTML interstitial with HTTP 200.
       if (looksLikeChallenge(response.status, new TextDecoder().decode(bytes.slice(0, 2000)), response.headers)) {
         this.record(url, "direct", response.status, false, true, ms);
         return "challenged";
@@ -578,28 +579,23 @@ export class Fetcher {
       return { url, status: response.status, bytes, contentType };
     };
 
-    const flareFirst =
-      this.preferFlareFirst() ||
-      this.limiter.inCooldown() ||
-      // CDN mp3s need Chrome Referer; Bun timeouts just waste ~requestTimeoutMs.
-      (purpose === "media" && this.flareConfigured);
+    const flareFirst = this.preferFlareFirst() || this.limiter.inCooldown();
 
     if (!flareFirst) {
       try {
         const first = await attemptDirect();
         if (first !== "challenged") return first;
         if (this.flareConfigured) {
-          this.blockDirectProbes(`Cloudflare challenge on ${purpose} fetch`);
+          this.blockDirectProbes(`Cloudflare challenge on image fetch`);
         } else {
           this.limiter.recordChallenge();
         }
       } catch (error) {
         if (error instanceof CooldownError) throw error;
         log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
-        // Timeouts / network blips on CDN hosts must not freeze Bun→origin for 30m.
         const text = String(error);
         if (!/TimeoutError|timed out|ECONNRESET|ENOTFOUND|fetch failed/i.test(text)) {
-          if (this.flareConfigured) this.blockDirectProbes(`direct ${purpose} fetch error`);
+          if (this.flareConfigured) this.blockDirectProbes(`direct image fetch error`);
         }
       }
     }
@@ -609,18 +605,9 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
-      let file: Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>> = null;
-      if (purpose === "media") {
-        // CDN has its own CF zone/cookies (reasd.org ≠ 4read.org). Warm CDN first,
-        // then homepage for Referer — never inject 4read cf_clearance into CDN downloads.
-        file = await this.downloadMediaViaChrome(url);
-        this.audioContextOnHome = false; // tab navigated to the mp3 URL
-      } else {
-        file = await this.flare.fetchImage(url);
-      }
+      const file = await this.flare.fetchImage(url);
       const ms = (Bun.nanoseconds() - started) / 1e6;
       if (!file) {
-        // Do not burn the challenge budget on CDN/media misses — that paused crawls for 10m.
         this.limiter.recordFailure();
         this.record(url, "flaresolverr", null, false, false, ms, "no file bytes");
         throw new ChallengeError(url);
@@ -639,38 +626,65 @@ export class Fetcher {
   }
 
   /**
-   * CDN mp3 path: warm reasd.org CF cookies in Chrome, land on 4read homepage (Referer),
-   * then download:true with only CDN-scoped jar cookies. Retry once with forced re-warm
-   * if the first attempt returns no usable bytes.
+   * Audio CDN is nginx Referer hotlink (no Cloudflare). Always Bun GET with site Referer.
+   * Do not route through FlareSolverr download:true — it re-fetches without the site Referer.
    */
-  private async downloadMediaViaChrome(
-    url: string,
-  ): Promise<Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>>> {
-    const headers = flareHeadersFrom(this.browserHeaders({ purpose: "playlist" }));
-    const attempt = async (forceWarm: boolean) => {
-      const warm = await this.flare.warmHost(url, { force: forceWarm });
-      if (warm.cookies.length) this.jar.set(warm.cookies);
-      this.audioContextOnHome = false;
-      await this.landOnHome();
-      const cdnCookies = this.jar.list(url);
-      log.info(
-        `Chrome DOWNLOAD with ${cdnCookies.length} CDN cookie(s) for ${new URL(url).host}` +
-          (cdnCookies.some((c) => c.name === "cf_clearance") ? " (has cf_clearance)" : " (no cf_clearance yet)"),
-      );
-      return this.flare.fetchDownload(url, {
-        cookies: cdnCookies,
-        headers,
-        minBytes: this.config.audio.minFileBytes,
-      });
-    };
+  private async downloadMediaDirect(url: string, referer?: string): Promise<BinaryResult> {
+    const ref = referer?.trim() || this.homeUrl();
+    // CDN traffic must not wait out 4read.org Cloudflare cooldowns.
+    await this.limiter.acquire({ ignoreCooldown: true });
 
-    let file = await attempt(false);
-    if (!file) {
-      log.warn(`CDN download miss for ${url}; re-warming CDN CF cookies and retrying once`);
-      this.flare.invalidateWarm(url);
-      file = await attempt(true);
+    const started = Bun.nanoseconds();
+    const headers = this.browserHeaders({ referer: ref, purpose: "playlist" });
+    headers.accept = "audio/mpeg,audio/*,application/octet-stream,*/*;q=0.8";
+    headers["sec-fetch-dest"] = "audio";
+    headers["sec-fetch-mode"] = "no-cors";
+    delete headers["upgrade-insecure-requests"];
+    delete headers["sec-fetch-user"];
+    // 4read cookies are useless on the CDN and can confuse debugging.
+    delete headers.cookie;
+    try {
+      const mediaHost = new URL(url).hostname;
+      const refHost = new URL(ref).hostname;
+      headers["sec-fetch-site"] = mediaHost === refHost || mediaHost.endsWith(`.${refHost}`) ? "same-site" : "cross-site";
+    } catch {
+      headers["sec-fetch-site"] = "cross-site";
     }
-    return file;
+
+    log.info(`CDN track direct GET (Referer ${ref}) → ${url}`);
+    try {
+      const response = await fetch(url, {
+        headers,
+        redirect: "follow",
+        signal: AbortSignal.timeout(this.config.source.requestTimeoutMs),
+      });
+      const contentType = response.headers.get("content-type");
+      const ms = (Bun.nanoseconds() - started) / 1e6;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const head = new TextDecoder().decode(bytes.slice(0, 200)).toLowerCase();
+      const html =
+        head.includes("<!doctype") || head.includes("<html") || (contentType ?? "").includes("text/html");
+
+      if (!response.ok || html) {
+        this.record(url, "direct", response.status, false, false, ms, html ? "hotlink html" : undefined);
+        log.warn(
+          `CDN track rejected (HTTP ${response.status}, ${bytes.length} bytes, html=${html}) for ${url} — need Referer ${ref}`,
+        );
+        throw new Error(`CDN hotlink rejected (HTTP ${response.status}) for ${url}`);
+      }
+
+      this.limiter.recordSuccess();
+      this.record(url, "direct", response.status, true, false, ms);
+      log.info(`CDN track via direct GET (${bytes.length} bytes) ${url}`);
+      return { url, status: response.status, bytes, contentType };
+    } catch (error) {
+      if (error instanceof CooldownError) throw error;
+      if (error instanceof Error && error.message.startsWith("CDN hotlink")) throw error;
+      const ms = (Bun.nanoseconds() - started) / 1e6;
+      this.limiter.recordFailure();
+      this.record(url, "direct", null, false, false, ms, String(error));
+      throw error;
+    }
   }
 
   /** Ask FlareSolverr to solve a challenge for the origin and keep the resulting cookies. */

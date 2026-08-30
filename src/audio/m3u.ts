@@ -602,7 +602,7 @@ async function ensureAudioFromPlaylistUnlocked(
       continue;
     }
     try {
-      // getBinary lands on homepage (Referer) then download:true — never re-opens book HTML.
+      // getBinary: Bun GET with homepage Referer (CDN is nginx hotlink, not CF).
       const binary = await fetcher.getBinary(track.url, {
         referer: fetcher.homeUrl(),
         purpose: "media",
