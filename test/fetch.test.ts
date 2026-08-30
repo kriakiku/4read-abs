@@ -84,7 +84,8 @@ async function harness(options: {
         return Response.json({ status: "error", message: "browser exploded" });
       }
       if (payload.cmd === "sessions.create") {
-        return Response.json({ status: "ok", session: "session-1" });
+        const id = typeof payload.session === "string" ? payload.session : "session-1";
+        return Response.json({ status: "ok", session: id });
       }
       if (payload.cmd === "sessions.destroy") {
         return Response.json({ status: "ok" });
@@ -344,8 +345,10 @@ describe("fetcher", () => {
     const creates = h.flareRequests.filter((request) => request.cmd === "sessions.create");
     const gets = h.flareRequests.filter((request) => request.cmd === "request.get");
     expect(creates).toHaveLength(1);
+    expect(typeof creates[0]!.session).toBe("string");
+    expect(String(creates[0]!.session)).toMatch(/^4read-/);
     expect(gets).toHaveLength(2);
-    expect(gets.every((request) => request.session === "session-1")).toBe(true);
+    expect(gets.every((request) => request.session === creates[0]!.session)).toBe(true);
 
     await fetcher.close();
     expect(h.flareRequests.some((request) => request.cmd === "sessions.destroy")).toBe(true);

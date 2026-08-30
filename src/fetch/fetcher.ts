@@ -502,29 +502,19 @@ export class Fetcher {
     try {
       let file: Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>> = null;
       if (purpose === "media") {
-        // 1) Solve CF on the CDN host (reasd.org) in this Chrome session.
+        // Shared Flare session required: warm CDN CF cookies, then land on the book HTML so
+        // download:true navigates with Referer: 4read (reasd.org hotlink). Fetching the mp3
+        // from reasd.org/ itself returns HTTP 403 (wrong Referer).
         await this.flare.warmHost(url);
-        let cdnOrigin: string | null = null;
-        try {
-          cdnOrigin = new URL(url).origin;
-        } catch {
-          cdnOrigin = null;
+        const bookReferer = options.referer?.trim() || null;
+        if (bookReferer) {
+          await this.flare.primeDocument(bookReferer, { cookies: this.jar.list() });
         }
-        // 2) Same-origin executeJs from the CDN (avoids CORS Failed to fetch from 4read HTML).
-        if (cdnOrigin) {
-          file = await this.flare.fetchViaPageExecuteJs(`${cdnOrigin}/`, url, {
-            cookies: this.jar.list(),
-            minBytes: this.config.audio.minFileBytes,
-          });
-        }
-        // 3) download:true with CDN clearance cookies already in the session.
-        if (!file) {
-          file = await this.flare.fetchDownload(url, {
-            cookies: this.jar.list(),
-            headers: flareHeadersFrom(this.browserHeaders({ purpose: "playlist" })),
-            minBytes: this.config.audio.minFileBytes,
-          });
-        }
+        file = await this.flare.fetchDownload(url, {
+          cookies: this.jar.list(),
+          headers: flareHeadersFrom(this.browserHeaders({ purpose: "playlist" })),
+          minBytes: this.config.audio.minFileBytes,
+        });
       } else {
         file = await this.flare.fetchImage(url);
       }

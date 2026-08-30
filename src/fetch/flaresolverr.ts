@@ -105,10 +105,17 @@ export class FlareSolverrClient {
   private async ensureSession(): Promise<void> {
     if (!this.useSession || this.session || this.sessionAttempted) return;
     this.sessionAttempted = true;
+    // flaresolverr-go requires a client-supplied session id on sessions.create
+    // ("session ID is required"). Without a persistent session every request.get is a
+    // fresh browser — CDN warm / book Referer / download never share cookies.
+    const sessionId = `4read-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
     try {
-      const result = await this.command({ cmd: "sessions.create" }, this.maxTimeoutMs);
-      if (result.status === "ok" && result.session) {
-        this.session = result.session;
+      const result = await this.command(
+        { cmd: "sessions.create", session: sessionId },
+        this.maxTimeoutMs,
+      );
+      if (result.status === "ok") {
+        this.session = result.session || sessionId;
         log.info(`created session ${this.session}`);
       } else {
         log.warn(`could not create session: ${result.message ?? "unknown error"}`);
@@ -302,8 +309,7 @@ export class FlareSolverrClient {
 
   /**
    * Solve Cloudflare (if any) for a media CDN origin inside the Chrome session so later
-   * `download: true` / same-origin executeJs carry that host's clearance cookies.
-   * Cross-origin `fetch()` from the 4read book page fails CORS (`Failed to fetch`).
+   * `download: true` carries that host's clearance cookies.
    */
   async warmHost(url: string): Promise<boolean> {
     let origin: string;
@@ -315,7 +321,7 @@ export class FlareSolverrClient {
     if (this.warmedHosts.has(origin)) return true;
     try {
       log.info(`Chrome warm CDN origin ${origin}`);
-      const result = await this.get(`${origin}/`);
+      const result = await this.get(`${origin}/`, { disableMedia: true });
       this.warmedHosts.add(origin);
       log.info(`Chrome warm CDN origin done → HTTP ${result.status}`);
       return true;
@@ -326,8 +332,29 @@ export class FlareSolverrClient {
   }
 
   /**
+   * Navigate the shared Chrome session to a document (book HTML) so the next
+   * `download:true` navigation sends Referer: that page — CDN hotlink checks it.
+   * Must run after `warmHost` (warm leaves the tab on the CDN origin).
+   */
+  async primeDocument(
+    pageUrl: string,
+    options: { cookies?: StoredCookie[] } = {},
+  ): Promise<boolean> {
+    try {
+      log.info(`Chrome prime Referer document ${pageUrl}`);
+      await this.get(pageUrl, {
+        cookies: options.cookies,
+        disableMedia: true,
+      });
+      return true;
+    } catch (error) {
+      log.warn(`Chrome prime document failed for ${pageUrl}: ${String(error)}`);
+      return false;
+    }
+  }
+
+  /**
    * Load `pageUrl` in Chrome, then `fetch(fileUrl)` in-page (must be same-origin or CORS-ok).
-   * Used after `warmHost` so we fetch the mp3 from the CDN origin itself.
    */
   async fetchViaPageExecuteJs(
     pageUrl: string,
@@ -340,7 +367,7 @@ export class FlareSolverrClient {
       const started = Date.now();
       const extra: Record<string, unknown> = {
         executeJs: mediaFetchExecuteJs(fileUrl),
-        waitInSeconds: 1,
+        disableMedia: true,
       };
       if (options.cookies?.length) {
         extra.cookies = options.cookies.map((c) => ({

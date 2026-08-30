@@ -491,6 +491,25 @@ export async function ensureAudioFromPlaylist(
     return null;
   }
 
+  // Re-fetch m3u via executeJs on the book page (not download:true) so signed CDN URLs are
+  // fresh if Playerjs raced the first fetch — and so we do not poison Flare download mode.
+  if (playlistUrl && referer) {
+    try {
+      const refreshed = await fetcher.warmBookPage(referer, { fetchPlaylistUrl: playlistUrl });
+      const freshBody = refreshed?.playlistBody
+        ? extractPlaylistBody(refreshed.playlistBody)
+        : null;
+      if (freshBody) {
+        body = freshBody;
+        log.info(
+          `audio: refreshed m3u before tracks for ${book.source_id} (${freshBody.length} bytes) page=${referer}`,
+        );
+      }
+    } catch (error) {
+      log.debug(`m3u refresh before tracks failed for ${book.source_id}: ${String(error)}`);
+    }
+  }
+
   const tracks = parseM3u(body, playlistUrl);
   if (tracks.length === 0) {
     log.warn(

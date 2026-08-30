@@ -393,7 +393,8 @@ describe("playlist audio fetch", () => {
       source: { baseUrl: `http://127.0.0.1:${origin.port}` },
     });
     await ensureAudioFromPlaylist(book(), join(dir, "book"), config, fetcher);
-    expect(htmlHits).toBe(1);
+    // Discovery warm + pre-track m3u refresh both hit the book HTML.
+    expect(htmlHits).toBe(2);
     expect(m3uCookies[0]).toContain("PHPSESSID=warm-1");
     expect(m3uCookies[0]).toContain("viewed_ids=6840");
   });
@@ -420,11 +421,14 @@ describe("playlist audio fetch", () => {
         const payload = (await request.json()) as Record<string, unknown>;
         flareRequests.push(payload);
         if (payload.cmd === "sessions.create") {
-          return Response.json({ status: "ok", session: "s1" });
+          return Response.json({
+            status: "ok",
+            session: typeof payload.session === "string" ? payload.session : "s1",
+          });
         }
         const target = String(payload.url ?? "");
         const js = String(payload.executeJs ?? "");
-        // Track bytes: same-origin executeJs from CDN origin after warmHost.
+        // Track bytes: same-origin executeJs no longer used for CDN (403 hotlink).
         if (js.includes("arrayBuffer")) {
           return Response.json({
             status: "ok",
@@ -434,7 +438,7 @@ describe("playlist audio fetch", () => {
               response: "<html><body>cdn</body></html>",
               cookies: [],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              executeJsResult: Buffer.from(mp3).toString("base64"),
+              executeJsResult: "Error:HTTP 403",
             },
           });
         }
@@ -577,7 +581,10 @@ describe("playlist audio fetch", () => {
         const payload = (await request.json()) as Record<string, unknown>;
         flareRequests.push(payload);
         if (payload.cmd === "sessions.create") {
-          return Response.json({ status: "ok", session: "s1" });
+          return Response.json({
+            status: "ok",
+            session: typeof payload.session === "string" ? payload.session : "s1",
+          });
         }
         const target = String(payload.url ?? "");
         const js = String(payload.executeJs ?? "");
@@ -596,7 +603,10 @@ describe("playlist audio fetch", () => {
         }
         if (target.includes(".html")) {
           const base = `http://127.0.0.1:${origin.port}`;
-          expect(js).toContain("m33u2");
+          // Playlist warm/refresh send executeJs; prime-Referer before mp3 download does not.
+          const executeJsResult = js.includes("m33u2")
+            ? `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`
+            : undefined;
           return Response.json({
             status: "ok",
             solution: {
@@ -605,7 +615,7 @@ describe("playlist audio fetch", () => {
               response: "<html><body>book</body></html>",
               cookies: [{ name: "PHPSESSID", value: "js", expires: -1 }],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              executeJsResult: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+              ...(executeJsResult ? { executeJsResult } : {}),
             },
           });
         }
@@ -697,7 +707,10 @@ describe("playlist audio fetch", () => {
         const payload = (await request.json()) as Record<string, unknown>;
         flareRequests.push(payload);
         if (payload.cmd === "sessions.create") {
-          return Response.json({ status: "ok", session: "s1" });
+          return Response.json({
+            status: "ok",
+            session: typeof payload.session === "string" ? payload.session : "s1",
+          });
         }
         const target = String(payload.url ?? "");
         const js = String(payload.executeJs ?? "");
@@ -710,7 +723,7 @@ describe("playlist audio fetch", () => {
               response: "<html><body>cdn</body></html>",
               cookies: [],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              executeJsResult: Buffer.from(mp3).toString("base64"),
+              executeJsResult: "Error:HTTP 403",
             },
           });
         }
@@ -815,12 +828,16 @@ describe("playlist audio fetch", () => {
     expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".m3u"))).toBe(
       true,
     );
-    // Tracks: warm CDN origin, then same-origin executeJs fetch (not cross-origin from book HTML).
+    // Tracks: warm CDN, prime book HTML (Referer), then download:true — not executeJs from reasd.org/.
+    expect(flareRequests.some((r) => r.cmd === "sessions.create" && typeof r.session === "string")).toBe(
+      true,
+    );
+    expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".mp3"))).toBe(
+      true,
+    );
     expect(
-      flareRequests.some(
-        (r) => String(r.executeJs ?? "").includes("arrayBuffer"),
-      ),
-    ).toBe(true);
+      flareRequests.filter((r) => String(r.url ?? "").includes(".html") && !r.download).length,
+    ).toBeGreaterThanOrEqual(1);
     expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);
     expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(true);
   });
