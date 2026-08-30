@@ -3,12 +3,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, parseConfigText, redactConfigText, saveConfigText } from "../src/config.ts";
+import {
+  compactConfigText,
+  loadConfig,
+  parseConfigText,
+  redactConfigText,
+  saveConfigText,
+} from "../src/config.ts";
 
 const KEYS = [
   "ABS_URL",
   "ABS_API_KEY",
-  "HARDCOVER_API_KEY",
   "FLARESOLVERR_URL",
   "FLARESOLVERR_MODE",
   "STAGING_DIR",
@@ -16,12 +21,7 @@ const KEYS = [
   "ABS_LIBRARY_DIR",
   "PORT",
   "SOURCE_MIN_INTERVAL_MS",
-  "OPENAI_API_KEY",
-  "OPENCODE_GO_API_KEY",
-  "AI_API_KEY",
-  "OPENAI_BASE_URL",
-  "OPENAI_MODEL",
-  "COVERS_PREFER",
+  "AUDIO_TRACK_CONCURRENCY",
 ];
 
 const saved = new Map<string, string | undefined>();
@@ -69,6 +69,26 @@ describe("configuration", () => {
     expect((config.sync as { createFolders?: boolean }).createFolders).toBeUndefined();
   });
 
+  test("legacy hardcover / ai / covers sections are ignored", () => {
+    const config = parseConfigText(
+      [
+        "hardcover:",
+        "  enabled: true",
+        "  apiKey: hc",
+        "ai:",
+        "  enabled: true",
+        "covers:",
+        "  prefer: hardcover-only",
+        "server:",
+        "  port: 9000",
+      ].join("\n"),
+    );
+    expect(config.server.port).toBe(9000);
+    expect((config as { hardcover?: unknown }).hardcover).toBeUndefined();
+    expect((config as { ai?: unknown }).ai).toBeUndefined();
+    expect((config as { covers?: unknown }).covers).toBeUndefined();
+  });
+
   test("subscriptions default to enabled", () => {
     const config = parseConfigText("subscriptions:\n  - type: series\n    value: dune\n");
     expect(config.subscriptions[0]).toEqual({ type: "series", value: "dune", enabled: true });
@@ -97,32 +117,6 @@ describe("configuration", () => {
     expect(config.paths.staging).toBe("/data/staging");
     expect(config.server.port).toBe(9999);
     expect(config.source.minIntervalMs).toBe(12000);
-  });
-
-  test("a Hardcover key switches the integration on", () => {
-    setEnv({ HARDCOVER_API_KEY: "hc-token" });
-    const config = parseConfigTextWithEnv("");
-    expect(config.hardcover.enabled).toBe(true);
-    expect(config.hardcover.apiKey).toBe("hc-token");
-  });
-
-  test("Hardcover stays off without a key", () => {
-    setEnv({});
-    expect(parseConfigTextWithEnv("").hardcover.enabled).toBe(false);
-  });
-
-  test("OpenAI / OpenCode Go key enables AI matching defaults", () => {
-    setEnv({ OPENAI_API_KEY: "sk-test" });
-    const config = parseConfigTextWithEnv("");
-    expect(config.ai.enabled).toBe(true);
-    expect(config.ai.apiKey).toBe("sk-test");
-    expect(config.ai.model).toBe("mimo-v2.5");
-    expect(config.covers.prefer).toBe("hardcover-first");
-  });
-
-  test("COVERS_PREFER overrides cover policy", () => {
-    setEnv({ COVERS_PREFER: "hardcover-only" });
-    expect(parseConfigTextWithEnv("").covers.prefer).toBe("hardcover-only");
   });
 
   test("audio section keeps timeout defaults and uses source.baseUrl", () => {
@@ -164,11 +158,67 @@ describe("configuration", () => {
   });
 
   test("redaction hides api keys from the editor", () => {
-    const text = "audiobookshelf:\n  apiKey: super-secret\nhardcover:\n  apiKey: other\n";
+    const text = "audiobookshelf:\n  apiKey: super-secret\n";
     const redacted = redactConfigText(text);
     expect(redacted).not.toContain("super-secret");
-    expect(redacted).not.toContain("other");
     expect(redacted).toContain("apiKey:");
+  });
+
+  test("compactConfigText drops defaults and unused sections", () => {
+    const text = [
+      "logLevel: info",
+      "server:",
+      "  host: 127.0.0.1",
+      "  port: 9001",
+      "hardcover:",
+      "  enabled: true",
+      "  apiKey: hc-token",
+      "ai:",
+      "  enabled: true",
+      "covers:",
+      "  prefer: hardcover-first",
+      "subscriptions:",
+      "  - type: series",
+      "    value: dune",
+      "    enabled: true",
+      "  - type: author",
+      "    value: Christie",
+      "    enabled: false",
+    ].join("\n");
+
+    const compact = compactConfigText(text);
+    expect(compact).toContain("port: 9001");
+    expect(compact).not.toContain("logLevel");
+    expect(compact).not.toContain("127.0.0.1");
+    expect(compact).not.toContain("hardcover");
+    expect(compact).not.toContain("ai:");
+    expect(compact).not.toContain("covers");
+    expect(compact).toContain("value: dune");
+    expect(compact).not.toMatch(/value: dune[\s\S]*enabled: true/);
+    expect(compact).toContain("enabled: false");
+    // Round-trip still loads with defaults filled in.
+    expect(parseConfigText(compact).server.port).toBe(9001);
+    expect(parseConfigText(compact).subscriptions).toHaveLength(2);
+  });
+
+  test("compactConfigText leaves invalid yaml untouched", () => {
+    const broken = "server:\n  port: not-a-number\n";
+    expect(compactConfigText(broken)).toBe(broken);
+  });
+
+  test("saveConfigText persists the compact form", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-abs-compact-"));
+    try {
+      const path = join(dir, "config.yaml");
+      setEnv({});
+      await saveConfigText("logLevel: info\nserver:\n  port: 8123\nhardcover:\n  enabled: true\n", path);
+      const onDisk = await Bun.file(path).text();
+      expect(onDisk).toContain("port: 8123");
+      expect(onDisk).not.toContain("logLevel");
+      expect(onDisk).not.toContain("hardcover");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

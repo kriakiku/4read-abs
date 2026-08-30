@@ -3,7 +3,7 @@ import { Hono } from "hono";
 // import as an HTMLBundle regardless of the attribute, hence the cast.
 import indexHtmlAsset from "./ui/index.html" with { type: "text" };
 import type { AppContext } from "../context.ts";
-import { parseConfigText, redactConfigText, saveConfigText } from "../config.ts";
+import { compactConfigText, parseConfigText, redactConfigText, saveConfigText } from "../config.ts";
 import { catalogCounts, getBook } from "../catalog/store.ts";
 import { cacheCoverInBackground, cachedCover } from "../covers.ts";
 import { buildSidecar } from "../abs/metadata.ts";
@@ -54,10 +54,7 @@ export function createApp(ctx: AppContext): Hono {
       integrations: {
         audiobookshelf: ctx.abs.configured,
         audiobookshelfUrl: ctx.config.audiobookshelf.url || null,
-        hardcover: ctx.hardcover.enabled,
-        ai: ctx.config.ai.enabled && ctx.config.ai.apiKey.length > 0,
         audioDownload: true,
-        coversPrefer: ctx.config.covers.prefer,
         absLibraryPath: ctx.config.paths.absLibrary || null,
         stagingPath: ctx.config.paths.staging,
       },
@@ -69,23 +66,26 @@ export function createApp(ctx: AppContext): Hono {
 
   app.get("/api/logs", (c) => c.json({ lines: recentLogs(300) }));
 
-  app.get("/api/config", (c) =>
-    c.json({
+  app.get("/api/config", (c) => {
+    // Drop unused / default keys so the editor only shows meaningful overrides.
+    const text = compactConfigText(ctx.configText);
+    return c.json({
       path: ctx.configPath,
-      text: ctx.configText,
+      text,
       // Secrets come from the environment; never echo them into the editor.
-      redacted: redactConfigText(ctx.configText),
-    }),
-  );
+      redacted: redactConfigText(text),
+    });
+  });
 
   app.put("/api/config", async (c) => {
     const body = (await c.req.json().catch(() => null)) as { text?: string } | null;
     if (!body || typeof body.text !== "string") return c.json({ error: "expected { text }" }, 400);
     try {
       const config = await saveConfigText(body.text, ctx.configPath);
-      ctx.reload(config, body.text);
+      const compact = compactConfigText(body.text);
+      ctx.reload(config, compact);
       log.info("configuration reloaded");
-      return c.json({ ok: true });
+      return c.json({ ok: true, text: compact });
     } catch (error) {
       return c.json({ error: String(error) }, 400);
     }

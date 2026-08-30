@@ -27,11 +27,6 @@ Environment:
   STAGING_DIR              Per-book staging folders (default: ./staging)
   ABS_LIBRARY_DIR          Audiobookshelf library as mounted for this process
   ABS_URL, ABS_API_KEY     Audiobookshelf server and API key
-  HARDCOVER_API_KEY        Enables Hardcover enrichment
-  COVERS_PREFER            hardcover-first (default) | hardcover-only | source
-  OPENAI_API_KEY           Optional OpenAI-compatible key (OpenCode Go / Zen)
-  OPENAI_BASE_URL          Default https://opencode.ai/zen/go/v1
-  OPENAI_MODEL             Default mimo-v2.5 (recommended on OpenCode Go)
   FLARESOLVERR_URL         FlareSolverr endpoint, e.g. http://127.0.0.1:8191/v1
   FLARESOLVERR_MODE        auto (default) | always | never
   AUDIO_TRACK_CONCURRENCY  Parallel CDN mp3 downloads per book (default: 5)

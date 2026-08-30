@@ -346,9 +346,10 @@
         </h2>
         <div class="body">
           <p class="msg" style="color: var(--muted); margin-top: 0">
-            YAML with syntax highlighting. Tab / Shift+Tab indent. Secrets
-            (<code>ABS_URL</code>, <code>ABS_API_KEY</code>, <code>HARDCOVER_API_KEY</code>,
+            YAML with syntax highlighting. Tab / Shift+Tab indent.             Secrets
+            (<code>ABS_URL</code>, <code>ABS_API_KEY</code>,
             <code>FLARESOLVERR_URL</code>) come from the environment and override this file.
+            Unused keys and values that match defaults are omitted automatically.
           </p>
           <div class="yaml-editor" id="config-editor">
             <pre class="yaml-highlight" id="config-highlight" aria-hidden="true"></pre>
@@ -423,12 +424,7 @@
           ),
         );
         pills.append(pill(`FlareSolverr: ${status.fetch.flaresolverr}`, status.fetch.flaresolverr === "not configured" ? "warn" : "ok"));
-        if (status.integrations.hardcover) pills.append(pill("Hardcover", "ok"));
-        if (status.integrations.ai) pills.append(pill("AI match", "ok"));
         if (status.integrations.audioDownload) pills.append(pill("Audio M3U", "ok"));
-        if (status.integrations.coversPrefer) {
-          pills.append(pill(`Covers: ${status.integrations.coversPrefer}`, "ok"));
-        }
         if (status.fetch.cooldownRemainingMs > 0) {
           pills.append(pill(`Paused ${Math.ceil(status.fetch.cooldownRemainingMs / 1000)}s`, "err"));
         }
@@ -810,11 +806,12 @@
         const button = $("btn-save");
         button.disabled = true;
         try {
-          await api("/api/config", {
+          const result = await api("/api/config", {
             method: "PUT",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ text: $("config-text").value }),
           });
+          if (typeof result.text === "string") setConfigText(result.text);
           message.className = "msg ok";
           message.textContent = "Saved and reloaded";
           await loadStatus();

@@ -126,77 +126,7 @@ export async function fetchBookDetail(ctx: AppContext, sourceId: number, url?: s
     }
   }
 
-  await enrichWithHardcover(ctx, sourceId);
   return "ok";
-}
-
-async function enrichWithHardcover(ctx: AppContext, sourceId: number): Promise<void> {
-  if (!ctx.hardcover.enabled) return;
-  const row = ctx.db
-    .query<
-      {
-        title: string;
-        series_name: string | null;
-        series_seq: string | null;
-        hardcover_book_id: string | null;
-        hardcover_cover_url: string | null;
-      },
-      [number]
-    >(
-      "select title, series_name, series_seq, hardcover_book_id, hardcover_cover_url from books where source_id = ?",
-    )
-    .get(sourceId);
-  // Skip only when we already have both a book id and a cover; otherwise retry for covers.
-  if (!row || (row.hardcover_book_id && row.hardcover_cover_url)) return;
-
-  const authors = ctx.db
-    .query<{ name: string }, [number]>(
-      "select a.name from book_authors ba join authors a on a.key = ba.author_key where ba.source_id = ?",
-    )
-    .all(sourceId)
-    .map((entry) => entry.name);
-
-  const tags = ctx.db
-    .query<{ tag: string }, [number]>("select tag from book_tags where source_id = ?")
-    .all(sourceId)
-    .map((entry) => entry.tag);
-
-  const match = await ctx.hardcover.enrich({
-    title: row.title,
-    authors,
-    seriesName: row.series_name,
-    seriesSeq: row.series_seq,
-    tags,
-  });
-  if (match.matchKind === "none" && !match.coverUrl) return;
-
-  ctx.db
-    .query(
-      `update books set
-         hardcover_book_id = coalesce(?, hardcover_book_id),
-         hardcover_slug = coalesce(?, hardcover_slug),
-         hardcover_cover_url = coalesce(?, hardcover_cover_url),
-         hardcover_series_id = coalesce(?, hardcover_series_id),
-         hardcover_match_kind = coalesce(?, hardcover_match_kind),
-         isbn = coalesce(isbn, ?),
-         asin = coalesce(asin, ?),
-         published_year = coalesce(published_year, ?)
-       where source_id = ?`,
-    )
-    .run(
-      match.bookId,
-      match.slug,
-      match.coverUrl,
-      match.seriesId,
-      match.matchKind === "none" ? null : match.matchKind,
-      match.isbn,
-      match.asin,
-      match.releaseYear,
-      sourceId,
-    );
-  log.debug(
-    `hardcover ${match.matchKind} for ${sourceId}: ${match.slug ?? match.seriesSlug ?? match.bookId ?? "cover-only"} (${match.score.toFixed(2)})`,
-  );
 }
 
 export interface BackfillResult {

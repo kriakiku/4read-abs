@@ -74,12 +74,10 @@ challenge **від FlareSolverr**, зменшується, коли все сп�
 `flaresolverr.maxTimeoutMs` за замовчуванням 180s.
 
 Обкладинки з 4read Cloudflare блокує для звичайного HTTP-клієнта навіть із
-`cf_clearance` (інший TLS-fingerprint). За замовчуванням `covers.prefer:
-hardcover-first`: спочатку береться обкладинка з **Hardcover CDN** (без Cloudflare),
-і лише якщо її немає — спроба через FlareSolverr (`download` / screenshot URL).
-`covers.prefer: hardcover-only` повністю уникає 4read для covers. Без Hardcover і без
-`FLARESOLVERR_URL` обкладинки, найімовірніше, не з’являться; метадані все одно
-пишуться. У FlareSolverr тримайте `DISABLE_MEDIA=false`.
+`cf_clearance` (інший TLS-fingerprint). Завантаження йде через Fetcher /
+FlareSolverr (`download` / Chrome). Без `FLARESOLVERR_URL` обкладинки,
+найімовірніше, не з’являться; метадані все одно пишуться. У FlareSolverr
+тримайте `DISABLE_MEDIA=false`.
 
 ## Встановлення
 
@@ -204,16 +202,13 @@ cp config.example.yaml config.yaml
 | `ABS_URL`, `ABS_API_KEY` | Сервер Audiobookshelf і API-ключ |
 | `ABS_LIBRARY_DIR` | Бібліотека ABS, як її бачить цей процес |
 | `FLARESOLVERR_URL`, `FLARESOLVERR_MODE` | Обхід Cloudflare |
-| `HARDCOVER_API_KEY` | Опційне збагачення з Hardcover (id, ISBN, обкладинки) |
-| `COVERS_PREFER` | `hardcover-first` (за замовч.) / `hardcover-only` / `source` |
-| `OPENAI_API_KEY` або `OPENCODE_GO_API_KEY` | Опційний AI лише для неоднозначних Hardcover-матчів |
-| `OPENAI_BASE_URL` | За замовч. `https://opencode.ai/zen/go/v1` |
-| `OPENAI_MODEL` | За замовч. **`mimo-v2.5`** (рекомендована в OpenCode Go) |
 | `STAGING_DIR`, `DATA_DIR`, `CONFIG_FILE` | Шляхи |
+| `AUDIO_TRACK_CONCURRENCY`, `AUDIO_TRACK_TIMEOUT_MS` | Паралель і таймаут CDN mp3 |
 | `HOST`, `PORT`, `LOG_LEVEL` | Веб-інтерфейс і логи |
 
 Решта — у `config.yaml` (див. `config.example.yaml`), редагується з веб-UI з
-валідацією й reload. **Автентифікації немає** — біндіть на loopback
+валідацією й reload. Редактор **приховує** невикористані ключі та значення, що
+збігаються з дефолтами. **Автентифікації немає** — біндіть на loopback
 (`127.0.0.1:8480` за замовчуванням; у Docker — `127.0.0.1:8480:8480`).
 
 ### Підписки
@@ -267,9 +262,9 @@ git push origin v0.1.0
 
 | Шлях | Навіщо |
 | --- | --- |
-| `{DATA_DIR}/4read-abs.db` (+ `4read-abs.db-wal`, `4read-abs.db-shm`, якщо є) | Каталог, черга, підписки, зв’язки з ABS, cookie jar Cloudflare, кеш Hardcover |
+| `{DATA_DIR}/4read-abs.db` (+ `4read-abs.db-wal`, `4read-abs.db-shm`, якщо є) | Каталог, черга, підписки, зв’язки з ABS, cookie jar Cloudflare |
 | `config.yaml` (або том `/config`) | Підписки, політики sync, path mappings |
-| Секрети з оточення | `ABS_URL`, `ABS_API_KEY`, `HARDCOVER_API_KEY`, тощо — у менеджері секретів / `.env`, не в git |
+| Секрети з оточення | `ABS_URL`, `ABS_API_KEY`, `FLARESOLVERR_URL`, тощо — у менеджері секретів / `.env`, не в git |
 
 Перед копіюванням **зупиніть** сервіс (`docker compose stop 4read-abs` або SIGTERM бінарнику), щоб SQLite у режимі WAL віддав узгоджений знімок. Альтернатива без даунтайму: `sqlite3 data/4read-abs.db ".backup 'backup/4read-abs.db'"`.
 
@@ -368,39 +363,6 @@ GET {source.baseUrl}/m33u2/{id}-{slug}.m3u
 Якщо тека вже має `metadata.json` / обкладинку, але **без** аудіо (стан черги
 `prepared`, або matched item у ABS без медіафайлів), наступний `sync` знову пробує
 скачати плейлист і докидає mp3 у ту ж теку.
-
-## Hardcover (опційно)
-
-`HARDCOVER_API_KEY` — канонічні id, ISBN/ASIN і **обкладинки з CDN**. Пошук спочатку
-йде за **англійською назвою циклу** з 4read (наприклад `All the Young Dudes` + номер
-тома), а не за українським заголовком. Кеш GraphQL постійний; ліміти вільні (~1 req/s).
-
-Якщо на Hardcover кілька років упаковані в один volume (наприклад
-`all-the-young-dudes-volume-two` = **Years 5–7**), окремі томи 4read **не
-зливаються** в один елемент ABS. Матч іде за діапазоном років у назві Hardcover:
-роки 5–7 отримують `match_kind: volume-pack` (slug + обкладинка того volume),
-решта років — ні. Джерело істини для ABS-структури — ідентифікатори 4read.
-
-## AI-матч (опційно, обережно)
-
-Лише для **сірої зони** евристичного скору Hardcover (`ai.minScore`…`ai.maxScore`).
-Не викликається на кожну книгу; відповіді кешуються; ліміти `maxCallsPerHour` /
-`maxCallsPerDay`.
-
-Рекомендована модель у підписці **OpenCode Go**: **`mimo-v2.5`** — найдешевший
-стабільний chat-модель у плані (endpoint `…/chat/completions`). Альтернативи ще
-дешевші (`muse-spark-…`) або з тренуванням на промптах — не рекомендуємо.
-
-```yaml
-ai:
-  enabled: true          # або ключ у OPENAI_API_KEY / OPENCODE_GO_API_KEY
-  baseUrl: https://opencode.ai/zen/go/v1
-  model: mimo-v2.5
-  maxCallsPerHour: 10
-  maxCallsPerDay: 50
-```
-
-У промпт іде лише назва/автор/цикл і короткий список кандидатів — без описів і HTML.
 
 ## Розробка
 

@@ -1,4 +1,4 @@
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 import { dirname, resolve } from "node:path";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -84,45 +84,6 @@ export const configSchema = z.object({
     })
     .prefault({}),
 
-  hardcover: z
-    .object({
-      enabled: z.boolean().default(false),
-      apiKey: z.string().default(""),
-      endpoint: z.string().default("https://api.hardcover.app/v1/graphql"),
-      /** Minimum heuristic score before a Hardcover book id is accepted as 1:1. */
-      acceptScore: z.number().min(0).max(1).default(0.8),
-    })
-    .prefault({}),
-
-  covers: z
-    .object({
-      /**
-       * hardcover-first - Hardcover CDN, then 4read (Cloudflare-gated)
-       * hardcover-only  - never download covers from 4read
-       * source          - only 4read (legacy behaviour)
-       */
-      prefer: z.enum(["hardcover-first", "hardcover-only", "source"]).default("hardcover-first"),
-    })
-    .prefault({}),
-
-  ai: z
-    .object({
-      /**
-       * Optional OpenAI-compatible API for ambiguous Hardcover matches only.
-       * Recommended OpenCode Go model: mimo-v2.5 (cheapest solid chat model on the plan).
-       */
-      enabled: z.boolean().default(false),
-      apiKey: z.string().default(""),
-      baseUrl: z.string().default("https://opencode.ai/zen/go/v1"),
-      model: z.string().default("mimo-v2.5"),
-      /** Call AI only when the best heuristic score is in [minScore, maxScore). */
-      minScore: z.number().min(0).max(1).default(0.55),
-      maxScore: z.number().min(0).max(1).default(0.85),
-      maxCallsPerHour: z.number().int().min(0).default(10),
-      maxCallsPerDay: z.number().int().min(0).default(50),
-    })
-    .prefault({}),
-
   audio: z
     .object({
       /**
@@ -188,6 +149,11 @@ export type PathMapping = z.infer<typeof pathMappingSchema>;
 
 export const DEFAULT_CONFIG_PATH = process.env.CONFIG_FILE ?? "./config.yaml";
 
+/** Fully resolved defaults (same shape as a parsed empty document). */
+export function defaultConfig(): Config {
+  return configSchema.parse({});
+}
+
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
@@ -228,32 +194,12 @@ function applyEnv(config: Config): Config {
   c.audiobookshelf.url = process.env.ABS_URL ?? c.audiobookshelf.url;
   c.audiobookshelf.apiKey = process.env.ABS_API_KEY ?? c.audiobookshelf.apiKey;
 
-  const hardcoverKey = process.env.HARDCOVER_API_KEY;
-  if (hardcoverKey) {
-    c.hardcover.apiKey = hardcoverKey;
-    if (envBool("HARDCOVER_ENABLED") !== false) c.hardcover.enabled = true;
-  }
-
-  const aiKey = process.env.OPENAI_API_KEY ?? process.env.OPENCODE_GO_API_KEY ?? process.env.AI_API_KEY;
-  if (aiKey) {
-    c.ai.apiKey = aiKey;
-    if (envBool("AI_ENABLED") !== false) c.ai.enabled = true;
-  }
-  c.ai.baseUrl = process.env.OPENAI_BASE_URL ?? process.env.AI_BASE_URL ?? c.ai.baseUrl;
-  c.ai.model = process.env.OPENAI_MODEL ?? process.env.AI_MODEL ?? c.ai.model;
-
-  const coverPrefer = process.env.COVERS_PREFER as Config["covers"]["prefer"] | undefined;
-  if (coverPrefer === "hardcover-first" || coverPrefer === "hardcover-only" || coverPrefer === "source") {
-    c.covers.prefer = coverPrefer;
-  }
-
   c.audio.trackTimeoutMs = envInt("AUDIO_TRACK_TIMEOUT_MS") ?? c.audio.trackTimeoutMs;
   c.audio.trackConcurrency = envInt("AUDIO_TRACK_CONCURRENCY") ?? c.audio.trackConcurrency;
 
   // Normalise the base URL once so URL joining is predictable everywhere else.
   c.source.baseUrl = c.source.baseUrl.replace(/\/+$/, "");
   c.audiobookshelf.url = c.audiobookshelf.url.replace(/\/+$/, "");
-  c.ai.baseUrl = c.ai.baseUrl.replace(/\/+$/, "");
   return c;
 }
 
@@ -275,12 +221,106 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH): { config: Config; text: 
 export async function saveConfigText(text: string, path = DEFAULT_CONFIG_PATH): Promise<Config> {
   // Validate before touching the file so a bad edit cannot break the next start.
   const parsed = parseConfigText(text);
+  // Persist the compact form so unused / default keys do not accumulate on disk.
+  const toWrite = compactConfigText(text);
   mkdirSync(dirname(resolve(path)), { recursive: true });
-  await Bun.write(path, text);
+  await Bun.write(path, toWrite.length > 0 ? `${toWrite}\n` : "");
   return applyEnv(parsed);
 }
 
 /** Config for the editor, with anything secret stripped out. */
 export function redactConfigText(text: string): string {
   return text.replace(/^(\s*apiKey\s*:\s*).+$/gim, "$1\"***\"");
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    return a.every((item, index) => deepEqual(item, b[index]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keysA = Object.keys(a).sort();
+    const keysB = Object.keys(b).sort();
+    if (keysA.length !== keysB.length) return false;
+    if (keysA.some((key, index) => key !== keysB[index])) return false;
+    return keysA.every((key) => deepEqual(a[key], b[key]));
+  }
+  return false;
+}
+
+const SUBSCRIPTION_ITEM_DEFAULTS: Record<string, unknown> = { enabled: true };
+const SUBSCRIPTION_ITEM_KEYS = new Set(["type", "value", "note", "enabled"]);
+
+function pruneSubscriptionItem(item: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(item)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (!SUBSCRIPTION_ITEM_KEYS.has(key)) continue;
+    if (key === "enabled" && value === SUBSCRIPTION_ITEM_DEFAULTS.enabled) continue;
+    if (key === "note" && (value === undefined || value === null || value === "")) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Drop keys that are not part of the schema and values that equal schema defaults.
+ * Used for the web editor so operators only see (and save) meaningful overrides.
+ */
+function pruneAgainstDefaults(value: unknown, defaults: unknown, path: string[] = []): unknown | undefined {
+  if (deepEqual(value, defaults)) return undefined;
+
+  if (Array.isArray(value)) {
+    if (path[path.length - 1] === "subscriptions") {
+      const items = value
+        .map((item) => pruneSubscriptionItem(item))
+        .filter((item): item is Record<string, unknown> => item !== undefined);
+      return items.length > 0 ? items : undefined;
+    }
+    // pathMappings and string lists: keep as-is when non-default
+    return value;
+  }
+
+  if (!isPlainObject(value) || !isPlainObject(defaults)) {
+    return value;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(defaults)) {
+    if (!(key in value)) continue;
+    const pruned = pruneAgainstDefaults(value[key], defaults[key], [...path, key]);
+    if (pruned !== undefined) out[key] = pruned;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * YAML for the UI: unknown sections (e.g. legacy hardcover/ai) removed, defaults omitted.
+ * Invalid documents are returned unchanged so the editor can still show a broken file.
+ */
+export function compactConfigText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === "") return "";
+
+  let raw: unknown;
+  try {
+    raw = parseYaml(text) ?? {};
+    // Reject documents that would not load; keep original text editable.
+    parseConfigText(text);
+  } catch {
+    return text;
+  }
+
+  if (!isPlainObject(raw)) return "";
+
+  const pruned = pruneAgainstDefaults(raw, defaultConfig() as unknown as Record<string, unknown>);
+  if (pruned === undefined) return "";
+  return stringifyYaml(pruned, { lineWidth: 0 }).trimEnd();
 }

@@ -1,9 +1,11 @@
 # 4read-abs configuration.
 #
 # Secrets belong in environment variables, not here: ABS_URL, ABS_API_KEY,
-# HARDCOVER_API_KEY, FLARESOLVERR_URL, OPENAI_API_KEY (or OPENCODE_GO_API_KEY)
-# all override whatever this file says.
+# FLARESOLVERR_URL all override whatever this file says.
 # Copy to config.yaml (or point CONFIG_FILE at it) and edit.
+#
+# The web editor omits unused keys and values that match defaults — only
+# overrides need to appear here.
 
 logLevel: info
 
@@ -50,33 +52,6 @@ audiobookshelf:
   triggerScan: true
   # Rewrites tags inside the audio files. Off by default because it modifies media.
   embedIntoAudioFiles: false
-
-hardcover:
-  # Optional: maps books onto Hardcover ids / covers. Prefer English series names from 4read
-  # (e.g. "All the Young Dudes") over Ukrainian titles. Soft failures only.
-  enabled: false
-  apiKey: ""
-  endpoint: https://api.hardcover.app/v1/graphql
-  acceptScore: 0.8
-
-covers:
-  # hardcover-first (default): Hardcover CDN, then 4read (Cloudflare-gated)
-  # hardcover-only: never hit 4read for covers
-  # source: only 4read
-  prefer: hardcover-first
-
-ai:
-  # Optional OpenAI-compatible helper for ambiguous Hardcover matches only.
-  # Recommended OpenCode Go model: mimo-v2.5 (cheapest solid chat model on the plan).
-  # Set OPENAI_API_KEY (or OPENCODE_GO_API_KEY). Keep budgets low — cached + capped.
-  enabled: false
-  apiKey: ""
-  baseUrl: https://opencode.ai/zen/go/v1
-  model: mimo-v2.5
-  minScore: 0.55
-  maxScore: 0.85
-  maxCallsPerHour: 10
-  maxCallsPerDay: 50
 
 audio:
   # Accept/sync requests {source.baseUrl}/m33u2/{id}-{slug}.m3u and downloads listed mp3s
