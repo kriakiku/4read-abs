@@ -74,6 +74,16 @@ export class Fetcher {
   readonly jar: CookieJar;
   readonly limiter: AdaptiveLimiter;
   private readonly flare: FlareSolverrClient;
+  /**
+   * Serialise whole-book audio pipelines (book→home→m3u→tracks). Accept can start
+   * prepare-A and prepare-B as separate jobs; without this lock they interleave Chrome
+   * navigations and burn each other's signed CDN URLs.
+   */
+  private audioGate: Promise<void> = Promise.resolve();
+  /** Book HTML URL whose book→home chain is currently established in Chrome. */
+  private audioContextBook: string | null = null;
+  /** True when the shared Chrome tab is on the site homepage (safe Referer, no Playerjs). */
+  private audioContextOnHome = false;
   /** When set, skip direct origin probes and go straight to FlareSolverr. */
   private directBlockedUntil = 0;
 
@@ -159,32 +169,125 @@ export class Fetcher {
   }
 
   /**
-   * Hit the article HTML in Chrome so cookies settle. Optionally run `executeJs` to
-   * `fetch()` the playlist URL in-page (same TLS + cookies as the solved challenge) —
-   * this is how stock-incompatible m3u works on flaresolverr-go / executeJs builds.
-   *
-   * Do not wait for the in-page Playerjs: signed CDN mp3 links are single-use / short-lived
-   * and the player will burn them. flaresolverr-go `disableMedia` + executeJs blockers stop that.
+   * Run one book's audio work alone. Concurrent Accept jobs must not share Chrome mid-pipeline.
+   */
+  async runExclusiveAudio<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.audioGate.then(async () => {
+      try {
+        return await task();
+      } finally {
+        this.audioContextBook = null;
+        this.audioContextOnHome = false;
+      }
+    });
+    this.audioGate = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  homeUrl(): string {
+    return `${this.config.source.baseUrl.replace(/\/+$/, "")}/`;
+  }
+
+  /**
+   * Chrome: open book HTML (kill Playerjs, no m3u fetch), then navigate to the site homepage.
+   * Homepage has no player — safe place to executeJs-fetch the m3u and to set Referer for
+   * CDN downloads. Call again whenever the book context changes (another book, or lost home).
+   */
+  async establishBookHomeContext(bookPageUrl: string): Promise<TextResult | null> {
+    if (!this.flareConfigured) {
+      try {
+        return await this.getText(bookPageUrl, { chrome: true });
+      } catch (error) {
+        log.debug(`book page load failed for ${bookPageUrl}: ${String(error)}`);
+        return null;
+      }
+    }
+
+    log.info(`Chrome book→home context for ${bookPageUrl}`);
+    let book: TextResult | null = null;
+    try {
+      book = await this.getText(bookPageUrl, {
+        chrome: true,
+        disableMedia: true,
+        executeJs: killPlayerExecuteJs(),
+      });
+    } catch (error) {
+      log.debug(`book page open failed for ${bookPageUrl}: ${String(error)}`);
+    }
+
+    try {
+      await this.getText(this.homeUrl(), {
+        chrome: true,
+        disableMedia: true,
+      });
+      this.audioContextBook = bookPageUrl;
+      this.audioContextOnHome = true;
+      log.info(`Chrome now on homepage (Referer base) after ${bookPageUrl}`);
+    } catch (error) {
+      log.warn(`Chrome homepage navigation failed: ${String(error)}`);
+      this.audioContextBook = null;
+      this.audioContextOnHome = false;
+    }
+    return book;
+  }
+
+  /** Ensure Chrome is on the homepage before a CDN download (Referer: 4read.org/, no player). */
+  async landOnHome(): Promise<void> {
+    if (!this.flareConfigured) return;
+    if (this.audioContextOnHome) return;
+    log.info(`Chrome land on homepage ${this.homeUrl()}`);
+    await this.getText(this.homeUrl(), {
+      chrome: true,
+      disableMedia: true,
+    });
+    this.audioContextOnHome = true;
+  }
+
+  /** In-page fetch of the m3u from the homepage (same origin, no Playerjs). */
+  async fetchPlaylistFromHome(playlistUrl: string): Promise<string | null> {
+    if (!this.flareConfigured) return null;
+    await this.landOnHome();
+    try {
+      log.info(`Chrome executeJs m3u from homepage → ${playlistUrl}`);
+      const result = await this.flare.get(this.homeUrl(), {
+        cookies: this.jar.list(),
+        disableMedia: true,
+        executeJs: playlistFetchExecuteJs(playlistUrl),
+      });
+      this.jar.setUserAgent(result.userAgent);
+      if (result.cookies.length) this.jar.set(result.cookies);
+      this.audioContextOnHome = true;
+      const body = playlistBodyFromExecuteJs(result.executeJsResult);
+      if (body) {
+        log.info(`playlist via homepage executeJs (${body.length} bytes)`);
+        return body;
+      }
+      log.warn(`homepage executeJs returned no m3u for ${playlistUrl}`);
+      return null;
+    } catch (error) {
+      log.warn(`homepage m3u fetch failed: ${String(error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * @deprecated Prefer establishBookHomeContext + fetchPlaylistFromHome.
    */
   async warmBookPage(
     pageUrl: string,
     options: { fetchPlaylistUrl?: string | null } = {},
   ): Promise<TextResult | null> {
-    try {
-      return await this.getText(pageUrl, {
-        chrome: true,
-        // No waitInSeconds: flaresolverr-go waits AFTER executeJs; that pause let Playerjs
-        // start track downloads and invalidate md5/expires URLs before our getBinary.
-        recordHar: this.flareConfigured,
-        disableMedia: this.flareConfigured,
-        executeJs: options.fetchPlaylistUrl
-          ? playlistFetchExecuteJs(options.fetchPlaylistUrl)
-          : undefined,
-      });
-    } catch (error) {
-      log.debug(`book page warm-up failed for ${pageUrl}: ${String(error)}`);
-      return null;
+    const book = await this.establishBookHomeContext(pageUrl);
+    if (options.fetchPlaylistUrl) {
+      const body = await this.fetchPlaylistFromHome(options.fetchPlaylistUrl);
+      if (book && body) {
+        return { ...book, playlistBody: body };
+      }
     }
+    return book;
   }
 
   /**
@@ -502,19 +605,17 @@ export class Fetcher {
     try {
       let file: Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>> = null;
       if (purpose === "media") {
-        // Shared Flare session required: warm CDN CF cookies, then land on the book HTML so
-        // download:true navigates with Referer: 4read (reasd.org hotlink). Fetching the mp3
-        // from reasd.org/ itself returns HTTP 403 (wrong Referer).
+        // CDN CF cookies first (leaves tab on reasd.org/), then homepage so download:true
+        // sends Referer: https://4read.org/ — no Playerjs. Never re-open the book HTML here.
         await this.flare.warmHost(url);
-        const bookReferer = options.referer?.trim() || null;
-        if (bookReferer) {
-          await this.flare.primeDocument(bookReferer, { cookies: this.jar.list() });
-        }
+        this.audioContextOnHome = false;
+        await this.landOnHome();
         file = await this.flare.fetchDownload(url, {
           cookies: this.jar.list(),
           headers: flareHeadersFrom(this.browserHeaders({ purpose: "playlist" })),
           minBytes: this.config.audio.minFileBytes,
         });
+        this.audioContextOnHome = false; // tab navigated to the mp3 URL
       } else {
         file = await this.flare.fetchImage(url);
       }
@@ -578,23 +679,24 @@ export function flareHeadersFrom(headers: Record<string, string>): Record<string
 const FLARE_HEADER_ALLOW = new Set(["accept", "accept-language", "accept-encoding"]);
 
 /**
- * In-page fetch of the m3u while still on the book origin (CF already cleared).
- * First stops Playerjs / patches fetch+XHR so `.mp3` and `reasd.org` cannot be requested —
- * otherwise the embed player starts track 1 and invalidates signed CDN URLs in the playlist.
+ * Stub Playerjs / pause media while Chrome is briefly on the book HTML.
+ * Do not fetch the m3u here — that happens from the homepage (no player).
  */
-export function playlistFetchExecuteJs(playlistUrl: string): string {
-  const urlLit = JSON.stringify(playlistUrl);
+export function killPlayerExecuteJs(): string {
   return (
-    `var __absPl=${urlLit};` +
-    `function __absBlock(u){u=String(u||"");return /\\.(mp3|m4a|m4b|flac|ogg|opus)(\\?|$)/i.test(u)||/reasd\\.org/i.test(u);}` +
     `try{` +
-    `var __f=window.fetch;window.fetch=function(i,n){var u=typeof i==="string"?i:(i&&i.url)||"";if(__absBlock(u))return Promise.reject(new Error("blocked-media"));return __f.apply(this,arguments);};` +
-    `var __xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){this.__absBlock=__absBlock(u);return __xo.apply(this,arguments);};` +
-    `var __xs=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){if(this.__absBlock)return;return __xs.apply(this,arguments);};` +
     `window.Playerjs=function(){return{api:function(){}};};` +
     `document.querySelectorAll("audio,video").forEach(function(el){try{el.pause();el.removeAttribute("src");el.load();}catch(e){}});` +
     `}catch(e){}` +
-    `return fetch(__absPl,{credentials:"include",headers:{"Accept":"*/*"}}).then(function(r){return r.text();})`
+    `return "ok"`
+  );
+}
+
+/** In-page fetch of the m3u from the site homepage (same origin as /m33u2/…). */
+export function playlistFetchExecuteJs(playlistUrl: string): string {
+  return (
+    `return fetch(${JSON.stringify(playlistUrl)},{credentials:"include",headers:{"Accept":"*/*"}})` +
+    `.then(function(r){return r.text();})`
   );
 }
 

@@ -16,7 +16,7 @@ import {
   trackSourcePath,
 } from "../src/audio/m3u.ts";
 import type { BookWithPeople } from "../src/catalog/store.ts";
-import { Fetcher, playlistFetchExecuteJs } from "../src/fetch/fetcher.ts";
+import { Fetcher, killPlayerExecuteJs, playlistFetchExecuteJs } from "../src/fetch/fetcher.ts";
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 const fetchers: Fetcher[] = [];
@@ -136,13 +136,18 @@ https://cdn.example/c.mp3
     ).toBe("https://4read.org/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u");
   });
 
-  test("playlist executeJs blocks Playerjs media before fetching m3u", () => {
+  test("playlist executeJs fetches m3u from the homepage context", () => {
     const js = playlistFetchExecuteJs("https://4read.org/m33u2/1-book.m3u");
-    expect(js).toContain("blocked-media");
-    expect(js).toContain("Playerjs");
-    expect(js).toContain("reasd\\.org");
     expect(js).toContain("https://4read.org/m33u2/1-book.m3u");
-    expect(js).toContain("return fetch(__absPl");
+    expect(js).toContain("return fetch(");
+    expect(js).not.toContain("Playerjs");
+  });
+
+  test("killPlayerExecuteJs stubs the embed without fetching media", () => {
+    const js = killPlayerExecuteJs();
+    expect(js).toContain("Playerjs");
+    expect(js).toContain("audio,video");
+    expect(js).not.toContain("fetch(");
   });
 
   test("returns null when the book has no slug or id", () => {
@@ -429,12 +434,14 @@ describe("playlist audio fetch", () => {
     });
     servers.push(origin);
 
-    const { fetcher } = await makeFetcher();
-    fetcher.jar.set([{ name: "cf_clearance", value: "clear-1" }]);
-    fetcher.jar.setUserAgent("TestUA/4read-abs");
     const config = configSchema.parse({
       source: { baseUrl: `http://127.0.0.1:${origin.port}` },
     });
+    const { fetcher } = await makeFetcher({
+      source: { baseUrl: `http://127.0.0.1:${origin.port}`, minIntervalMs: 0, challengeCooldownMs: 50 },
+    });
+    fetcher.jar.set([{ name: "cf_clearance", value: "clear-1" }]);
+    fetcher.jar.setUserAgent("TestUA/4read-abs");
     await ensureAudioFromPlaylist(book(), join(dir, "book"), config, fetcher);
 
     const htmlReq = seen.find((r) => r.path.endsWith(".html"));
@@ -445,9 +452,8 @@ describe("playlist audio fetch", () => {
       seen.findIndex((r) => r.path.endsWith(".m3u")),
     );
     expect(playlistReq!.accept).toBe("*/*");
-    expect(playlistReq!.referer).toBe(
-      `http://127.0.0.1:${origin.port}/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.html`,
-    );
+    // Playlist Referer is the site homepage (book→home pipeline), not the article HTML.
+    expect(playlistReq!.referer).toBe(`http://127.0.0.1:${origin.port}/`);
     expect(playlistReq!.cookie).toContain("cf_clearance=clear-1");
     expect(playlistReq!.cookie).toContain("PHPSESSID=sess-from-page");
     expect(playlistReq!.cookie).toContain("viewed_ids=6840");
@@ -495,8 +501,8 @@ describe("playlist audio fetch", () => {
       source: { baseUrl: `http://127.0.0.1:${origin.port}` },
     });
     await ensureAudioFromPlaylist(book(), join(dir, "book"), config, fetcher);
-    // Discovery warm + pre-track m3u refresh both hit the book HTML.
-    expect(htmlHits).toBe(2);
+    // Book HTML opened once for book→home; m3u is fetched from the homepage context.
+    expect(htmlHits).toBe(1);
     expect(m3uCookies[0]).toContain("PHPSESSID=warm-1");
     expect(m3uCookies[0]).toContain("viewed_ids=6840");
   });
@@ -573,9 +579,23 @@ describe("playlist audio fetch", () => {
             },
           });
         }
-        // CDN warm: GET http://host/
+        // Homepage / CDN root: executeJs m3u fetch, or plain warm.
         try {
           if (new URL(target).pathname === "/") {
+            const base = `http://127.0.0.1:${origin.port}`;
+            if (js.includes("m33u2") || js.includes(".m3u")) {
+              return Response.json({
+                status: "ok",
+                solution: {
+                  url: target,
+                  status: 200,
+                  response: "<html><body>home</body></html>",
+                  cookies: [],
+                  userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+                  executeJsResult: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+                },
+              });
+            }
             return Response.json({
               status: "ok",
               solution: {
@@ -653,10 +673,8 @@ describe("playlist audio fetch", () => {
       .filter((r) => r.cmd === "request.get")
       .map((r) => String(r.url ?? ""));
     expect(chromeUrls.some((u) => u.includes(".html"))).toBe(true);
-    // Playlist came from the page HAR — no separate Chrome GET for .m3u needed.
-    expect(chromeUrls.some((u) => u.includes(".m3u"))).toBe(false);
-    expect(flareRequests.some((r) => r.recordHar === true)).toBe(true);
-    // m3u must not be fetched by Bun against the origin
+    expect(chromeUrls.some((u) => u.endsWith("/") || new URL(u).pathname === "/")).toBe(true);
+    // m3u body came from homepage executeJs — no Bun hit on .m3u
     expect(originHits.some((p) => p.endsWith(".m3u"))).toBe(false);
     expect(fetcher.jar.phpSessionId()).toBeTruthy();
   });
@@ -704,11 +722,6 @@ describe("playlist audio fetch", () => {
           });
         }
         if (target.includes(".html")) {
-          const base = `http://127.0.0.1:${origin.port}`;
-          // Playlist warm/refresh send executeJs; prime-Referer before mp3 download does not.
-          const executeJsResult = js.includes("m33u2")
-            ? `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`
-            : undefined;
           return Response.json({
             status: "ok",
             solution: {
@@ -717,18 +730,32 @@ describe("playlist audio fetch", () => {
               response: "<html><body>book</body></html>",
               cookies: [{ name: "PHPSESSID", value: "js", expires: -1 }],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
-              ...(executeJsResult ? { executeJsResult } : {}),
+              executeJsResult: js.includes("Playerjs") ? "ok" : undefined,
             },
           });
         }
         try {
           if (new URL(target).pathname === "/") {
+            const base = `http://127.0.0.1:${origin.port}`;
+            if (js.includes("m33u2") || js.includes(".m3u")) {
+              return Response.json({
+                status: "ok",
+                solution: {
+                  url: target,
+                  status: 200,
+                  response: "<html><body>home</body></html>",
+                  cookies: [],
+                  userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+                  executeJsResult: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+                },
+              });
+            }
             return Response.json({
               status: "ok",
               solution: {
                 url: target,
                 status: 200,
-                response: "<html><body>cdn root</body></html>",
+                response: "<html><body>home</body></html>",
                 cookies: [],
                 userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
               },
@@ -773,16 +800,15 @@ describe("playlist audio fetch", () => {
     const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
     expect(result?.downloaded).toBe(1);
     expect(flareRequests.some((r) => typeof r.executeJs === "string")).toBe(true);
-    const bookWarm = flareRequests.find(
+    const homeM3u = flareRequests.find(
       (r) =>
         typeof r.executeJs === "string" &&
-        String(r.executeJs).includes("blocked-media") &&
-        !String(r.executeJs).includes("arrayBuffer"),
+        String(r.executeJs).includes("m33u2") &&
+        new URL(String(r.url)).pathname === "/",
     );
-    expect(bookWarm).toBeTruthy();
-    expect(bookWarm?.disableMedia).toBe(true);
-    expect(bookWarm?.waitInSeconds).toBeUndefined();
-    // No separate m3u download/navigate — body came from executeJs on the HTML request.
+    expect(homeM3u).toBeTruthy();
+    expect(homeM3u?.disableMedia).toBe(true);
+    // No separate m3u download — body came from homepage executeJs.
     expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(false);
   });
 
@@ -876,6 +902,20 @@ describe("playlist audio fetch", () => {
         }
         try {
           if (new URL(target).pathname === "/") {
+            const base = `http://127.0.0.1:${origin.port}`;
+            if (js.includes("m33u2") || js.includes(".m3u")) {
+              return Response.json({
+                status: "ok",
+                solution: {
+                  url: target,
+                  status: 200,
+                  response: "<html><body>home</body></html>",
+                  cookies: [],
+                  userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+                  executeJsResult: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+                },
+              });
+            }
             return Response.json({
               status: "ok",
               solution: {
@@ -927,10 +967,7 @@ describe("playlist audio fetch", () => {
     const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
     expect(result?.downloaded).toBe(1);
     expect(await readdir(target)).toContain("0001-a.mp3");
-    expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".m3u"))).toBe(
-      true,
-    );
-    // Tracks: warm CDN, prime book HTML (Referer), then download:true — not executeJs from reasd.org/.
+    // Tracks: warm CDN, land homepage (Referer), download:true
     expect(flareRequests.some((r) => r.cmd === "sessions.create" && typeof r.session === "string")).toBe(
       true,
     );
@@ -938,9 +975,10 @@ describe("playlist audio fetch", () => {
       true,
     );
     expect(
-      flareRequests.filter((r) => String(r.url ?? "").includes(".html") && !r.download).length,
-    ).toBeGreaterThanOrEqual(1);
+      flareRequests.some(
+        (r) => typeof r.executeJs === "string" && String(r.executeJs).includes("m33u2"),
+      ),
+    ).toBe(true);
     expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);
-    expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(true);
   });
 });

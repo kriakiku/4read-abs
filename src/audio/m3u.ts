@@ -471,10 +471,19 @@ export function extractPlaylistFromHar(
 }
 
 /**
- * Load the book page in Chrome, prefer the m3u body from page network/HAR or the Playerjs
- * URL embedded in HTML, then download tracks. Soft-skips when the playlist is empty.
+ * Book → site homepage → m3u (executeJs) → tracks (download with homepage Referer).
+ * Entire pipeline is exclusive so concurrent Accept jobs cannot switch Chrome mid-book.
  */
 export async function ensureAudioFromPlaylist(
+  book: BookWithPeople,
+  dir: string,
+  config: Config,
+  fetcher: Fetcher,
+): Promise<AudioFetchResult | null> {
+  return fetcher.runExclusiveAudio(() => ensureAudioFromPlaylistUnlocked(book, dir, config, fetcher));
+}
+
+async function ensureAudioFromPlaylistUnlocked(
   book: BookWithPeople,
   dir: string,
   config: Config,
@@ -487,7 +496,6 @@ export async function ensureAudioFromPlaylist(
   const markerCandidate = constructedUrl;
 
   // Resume: if every expected track from a prior manifest is already on disk, skip network.
-  // Partial folders must NOT early-return — missing tracks still need a fresh m3u + download.
   {
     const prior = await readAudioStatus(dir, config.audio.minFileBytes);
     if (prior.complete && prior.total > 0) {
@@ -513,91 +521,51 @@ export async function ensureAudioFromPlaylist(
     }
   }
 
-  log.info(`audio: loading book page for playlist discovery ${book.source_id} → page=${referer}`);
+  log.info(`audio: book→home pipeline for ${book.source_id} → book=${referer}`);
 
   let playlistUrl = constructedUrl;
   let body: string | null = null;
-  /** How we chose the m3u URL / body: executejs | har | playerjs | constructed */
-  let discovery: "executejs" | "har" | "playerjs" | "constructed" | null = constructedUrl
+  let discovery: "executejs" | "playerjs" | "constructed" | null = constructedUrl
     ? "constructed"
     : null;
 
-  try {
-    const page = await fetcher.warmBookPage(referer, { fetchPlaylistUrl: constructedUrl });
-    if (page?.playlistBody) {
-      body = extractPlaylistBody(page.playlistBody);
-      if (body) {
-        discovery = "executejs";
-        log.info(
-          `audio: m3u source=executejs (in-page fetch while loading book HTML) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
-        );
-      }
-    }
-    if (!body && page?.har) {
-      const fromHar = extractPlaylistFromHar(page.har);
-      if (fromHar) {
-        playlistUrl = fromHar.url;
-        body = fromHar.body;
-        discovery = "har";
-        log.info(
-          `audio: m3u source=har (Chrome network while loading page) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
-        );
-      } else {
-        log.info(
-          `audio: HAR present but no /m33u2/*.m3u entry for ${book.source_id} page=${referer}`,
-        );
-      }
-    } else if (!body) {
+  const bookPage = await fetcher.establishBookHomeContext(referer);
+  if (bookPage?.body) {
+    const preferKey = playlistKeyFor(book);
+    const fromHtml = extractPlaylistUrlFromHtml(bookPage.body, config.source.baseUrl, preferKey);
+    if (fromHtml) {
+      playlistUrl = fromHtml;
+      discovery = "playerjs";
       log.info(
-        `audio: no executeJs/HAR playlist for ${book.source_id}; trying Playerjs HTML then constructed URL page=${referer}`,
+        `audio: m3u URL from Playerjs in book HTML for ${book.source_id} → m3u=${playlistUrl}`,
       );
     }
-    if (!body && page?.body) {
-      const preferKey = playlistKeyFor(book);
-      const fromHtml = extractPlaylistUrlFromHtml(page.body, config.source.baseUrl, preferKey);
-      if (fromHtml) {
-        playlistUrl = fromHtml;
-        discovery = "playerjs";
-        log.info(
-          `audio: m3u source=playerjs (URL from Playerjs file= in HTML) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
-        );
-      } else {
-        log.info(
-          `audio: no Playerjs m3u URL in HTML for ${book.source_id}; will use constructed path page=${referer}`,
-        );
-      }
-    }
-  } catch (error) {
-    log.debug(`book page warm-up error for ${book.source_id}: ${String(error)}`);
   }
 
   if (!playlistUrl) {
-    log.warn(
-      `audio skipped for ${book.source_id}: cannot resolve playlist URL page=${referer}`,
-    );
+    log.warn(`audio skipped for ${book.source_id}: cannot resolve playlist URL page=${referer}`);
     return null;
   }
 
+  // Fresh signed track URLs from the homepage (no Playerjs).
+  body = await fetcher.fetchPlaylistFromHome(playlistUrl);
+  if (body) {
+    discovery = "executejs";
+    log.info(
+      `audio: m3u source=executejs (homepage) for ${book.source_id} → m3u=${playlistUrl}`,
+    );
+  }
+
   if (!body) {
-    if (discovery === "constructed") {
-      log.info(
-        `audio: m3u source=constructed ({id}-{slug} from book URL) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
-      );
-    }
     try {
       log.info(
-        `audio: fetching playlist (source=${discovery ?? "unknown"}; direct GET or Chrome download) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+        `audio: homepage m3u miss; fallback download/direct for ${book.source_id} → m3u=${playlistUrl}`,
       );
-      const text = await fetcher.getPlaylistText(playlistUrl, { referer });
+      const text = await fetcher.getPlaylistText(playlistUrl, { referer: fetcher.homeUrl() });
       body = extractPlaylistBody(text.body);
-      if (!body) {
-        log.warn(
-          `playlist body not M3U after fetch (source=${discovery ?? "unknown"}) bytes=${text.body.length} head=${JSON.stringify(text.body.trim().slice(0, 80))} m3u=${playlistUrl} page=${referer}`,
-        );
-      }
     } catch (error) {
       log.warn(
-        `playlist fetch failed for ${book.slug} (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer}: ${String(error)}`,
+        `playlist fetch failed for ${book.slug} m3u=${playlistUrl}: ${String(error)}`,
       );
       return null;
     }
@@ -605,35 +573,14 @@ export async function ensureAudioFromPlaylist(
 
   if (!body) {
     log.warn(
-      `playlist for ${book.slug} returned HTML/empty instead of M3U (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer} — Cloudflare or wrong URL?`,
+      `playlist for ${book.slug} returned HTML/empty instead of M3U (source=${discovery ?? "unknown"}) m3u=${playlistUrl} — Cloudflare or wrong URL?`,
     );
     return null;
   }
 
-  // Re-fetch m3u via executeJs on the book page (not download:true) so signed CDN URLs are
-  // fresh if Playerjs raced the first fetch — and so we do not poison Flare download mode.
-  if (playlistUrl && referer) {
-    try {
-      const refreshed = await fetcher.warmBookPage(referer, { fetchPlaylistUrl: playlistUrl });
-      const freshBody = refreshed?.playlistBody
-        ? extractPlaylistBody(refreshed.playlistBody)
-        : null;
-      if (freshBody) {
-        body = freshBody;
-        log.info(
-          `audio: refreshed m3u before tracks for ${book.source_id} (${freshBody.length} bytes) page=${referer}`,
-        );
-      }
-    } catch (error) {
-      log.debug(`m3u refresh before tracks failed for ${book.source_id}: ${String(error)}`);
-    }
-  }
-
   const tracks = parseM3u(body, playlistUrl);
   if (tracks.length === 0) {
-    log.warn(
-      `playlist empty for ${book.slug} (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer}`,
-    );
+    log.warn(`playlist empty for ${book.slug} m3u=${playlistUrl}`);
     return null;
   }
 
@@ -655,9 +602,9 @@ export async function ensureAudioFromPlaylist(
       continue;
     }
     try {
+      // getBinary lands on homepage (Referer) then download:true — never re-opens book HTML.
       const binary = await fetcher.getBinary(track.url, {
-        // Book HTML — CDN hotlink checks Referer; m3u URL is wrong here.
-        referer,
+        referer: fetcher.homeUrl(),
         purpose: "media",
       });
       if (binary.bytes.length < config.audio.minFileBytes) {
@@ -673,8 +620,6 @@ export async function ensureAudioFromPlaylist(
     }
   }
 
-  // Only mark the playlist complete when every expected track is on disk — partial runs
-  // must resume missing files on the next sync/accept.
   if (files.length === tracks.length && playlistUrl) {
     await writeFile(markerPath, playlistUrl);
   }

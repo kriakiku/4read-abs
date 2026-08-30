@@ -346,12 +346,10 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Аудіо з плейлистів 4read
 
-Після **Accept** Chrome відкриває HTML книги з `disableMedia` (блокує Media на рівні
-CDP) і через `executeJs` глушить Playerjs/`fetch` на `.mp3`+`reasd.org`, потім
-робить in-page `fetch` плейлиста — щоб плеєр не спалив signed CDN URL до нашого
-скачування треків. Далі: свіжий m3u (download), warm CDN у **тій самій** Flare-сесії
-(`sessions.create` з id — обов’язково для flaresolverr-go), prime HTML книги
-(Referer), `download:true` треків. Файли: `0001-origName.mp3`, …
+Після **Accept** Chrome: HTML книги (глушимо Playerjs) → **головна 4read.org/**
+(без плеєра) → `executeJs` fetch m3u → для кожного треку знову головна (Referer) +
+`download:true`. Весь аудіо-пайплайн серіалізований (`runExclusiveAudio`): паралельні
+Accept не перемикають Chrome між книгами. Файли: `0001-origName.mp3`, …
 Повторний sync пропускає вже скачані треки (маркер `.4read-audio-playlist`).
 
 **Потрібен FlareSolverr з `download`/`executeJs`** (compose вже ставить
