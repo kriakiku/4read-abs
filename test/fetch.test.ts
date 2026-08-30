@@ -186,7 +186,7 @@ describe("cookie jar", () => {
     expect(jar.header()).toContain("b=2");
   });
 
-  test("flareHeadersFrom strips sec-fetch-* (rejected by flaresolverr-go)", () => {
+  test("flareHeadersFrom strips sec-fetch-* and Referer (rejected by flaresolverr-go)", () => {
     const filtered = flareHeadersFrom({
       accept: "*/*",
       "accept-language": "uk",
@@ -202,7 +202,6 @@ describe("cookie jar", () => {
     expect(filtered).toEqual({
       accept: "*/*",
       "accept-language": "uk",
-      referer: "https://4read.org/3130-yudkovski-elizer-garri-potter-i-metody-racionalnosty-t-2.html",
     });
   });
 

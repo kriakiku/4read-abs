@@ -262,10 +262,15 @@ export class FlareSolverrClient {
           log.warn(`Chrome DOWNLOAD for ${url} returned HTML (${size} bytes), not a file`);
         }
       } else {
-        log.debug(
-          `Chrome DOWNLOAD unavailable for ${url}: ${downloaded.message ?? "no download payload"}`,
-        );
+        const message = downloaded.message ?? "no download payload";
+        log.debug(`Chrome DOWNLOAD unavailable for ${url}: ${message}`);
+        // Client sent a header Go rejects — download mode itself still works; do not disable.
+        if (/invalid headers?/i.test(message)) {
+          log.warn(`Chrome DOWNLOAD rejected our headers (${message}); retry without forbidden names`);
+          return null;
+        }
       }
+      // ok + HTML / empty payload → stock FlareSolverr (v2 removed download).
       if (this.downloadSupported === null) {
         this.downloadSupported = false;
         log.warn(
@@ -273,7 +278,9 @@ export class FlareSolverrClient {
         );
       }
     } catch (error) {
-      log.debug(`FlareSolverr download mode unavailable: ${String(error)}`);
+      const text = String(error);
+      log.debug(`FlareSolverr download mode unavailable: ${text}`);
+      if (/invalid headers?/i.test(text)) return null;
       if (this.downloadSupported === null) this.downloadSupported = false;
     }
     return null;

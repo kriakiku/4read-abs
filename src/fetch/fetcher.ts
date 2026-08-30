@@ -475,7 +475,12 @@ export class Fetcher {
       } catch (error) {
         if (error instanceof CooldownError) throw error;
         log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
-        if (this.flareConfigured) this.blockDirectProbes(`direct ${purpose} fetch error`);
+        // Timeouts / network blips on CDN hosts must not freeze Bun→origin for 30m.
+        // Only Cloudflare-style failures should flip preferFlareFirst.
+        const text = String(error);
+        if (!/TimeoutError|timed out|ECONNRESET|ENOTFOUND|fetch failed/i.test(text)) {
+          if (this.flareConfigured) this.blockDirectProbes(`direct ${purpose} fetch error`);
+        }
       }
     }
 
@@ -534,8 +539,8 @@ export class Fetcher {
 
 /**
  * Headers FlareSolverr / flaresolverr-go will forward into Chrome.
- * Go's net/http (flaresolverr-go) rejects forbidden names like `sec-fetch-*`;
- * Cookie/Host are passed separately. Keep an allowlist of safe browser hints.
+ * Go's net/http (flaresolverr-go) rejects forbidden names: `sec-fetch-*`, `Referer`, Cookie, Host, …
+ * Cookie is passed via the cookies field; Referer is not settable — rely on same-session navigation.
  */
 export function flareHeadersFrom(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -547,13 +552,8 @@ export function flareHeadersFrom(headers: Record<string, string>): Record<string
   return out;
 }
 
-/** Only headers flaresolverr-go accepts on request.get (no sec-fetch-*, Cookie, Host, …). */
-const FLARE_HEADER_ALLOW = new Set([
-  "accept",
-  "accept-language",
-  "referer",
-  "accept-encoding",
-]);
+/** Only headers flaresolverr-go accepts on request.get (Go forbids Referer, sec-*, Cookie, Host, …). */
+const FLARE_HEADER_ALLOW = new Set(["accept", "accept-language", "accept-encoding"]);
 
 /** In-page fetch of the m3u while still on the book origin (CF already cleared). */
 export function playlistFetchExecuteJs(playlistUrl: string): string {
