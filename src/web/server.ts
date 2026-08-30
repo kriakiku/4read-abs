@@ -14,6 +14,7 @@ import { backfillDetails, seedEntities, syncSitemap } from "../jobs/crawl.ts";
 import { listQueue, queueCounts, refreshQueue, setQueueState, deleteQueueEntry } from "../jobs/subscriptions.ts";
 import { prepareAcceptedBook, syncLibrary } from "../jobs/sync.ts";
 import { logger } from "../log.ts";
+import { VERSION } from "../version.ts";
 
 const log = logger("web");
 
@@ -26,11 +27,12 @@ export function createApp(ctx: AppContext): Hono {
   const app = new Hono();
 
   app.get("/", (c) => c.html(indexHtml));
-  app.get("/healthz", (c) => c.json({ ok: true }));
+  app.get("/healthz", (c) => c.json({ ok: true, version: VERSION }));
 
   app.get("/api/status", (c) => {
     const limiter = ctx.fetcher.limiter.state();
     return c.json({
+      version: VERSION,
       startedAt: ctx.startedAt,
       catalog: catalogCounts(ctx.db),
       queue: queueCounts(ctx),

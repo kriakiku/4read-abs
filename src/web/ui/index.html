@@ -41,6 +41,14 @@
       }
       header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.2px; }
       header .sub { color: var(--muted); font-size: 13px; }
+      header #header-version {
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: var(--accent);
+        padding: 2px 8px;
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+      }
       main { padding: 24px; max-width: 1200px; margin: 0 auto; display: grid; gap: 24px; }
       section {
         background: var(--panel);
@@ -210,6 +218,7 @@
   <body>
     <header>
       <h1>4read → Audiobookshelf</h1>
+      <span class="sub" id="header-version">…</span>
       <span class="sub" id="header-sub">loading…</span>
       <span class="row" id="header-pills" style="margin-left: auto"></span>
     </header>
@@ -352,6 +361,10 @@
         }
 
         const running = status.jobs.filter((job) => job.running).map((job) => job.name);
+        if (status.version) {
+          $("header-version").textContent = `v${status.version}`;
+          document.title = `4read → ABS v${status.version}`;
+        }
         $("header-sub").textContent = running.length
           ? `running: ${running.join(", ")}`
           : `up ${ago(status.startedAt)}`;

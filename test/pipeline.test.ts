@@ -487,6 +487,7 @@ describe("http api", () => {
     const status = (await response.json()) as Record<string, any>;
 
     expect(status.catalog.books).toBe(3);
+    expect(status.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(status.integrations.audiobookshelf).toBe(true);
     expect(status.subscriptions).toHaveLength(2);
     expect(status.jobs.map((job: { name: string }) => job.name)).toContain("sync");

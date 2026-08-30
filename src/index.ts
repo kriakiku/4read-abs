@@ -5,6 +5,7 @@ import { Scheduler } from "./jobs/scheduler.ts";
 import { refreshQueue } from "./jobs/subscriptions.ts";
 import { syncLibrary } from "./jobs/sync.ts";
 import { createApp } from "./web/server.ts";
+import { VERSION } from "./version.ts";
 
 const log = logger("main");
 
@@ -36,8 +37,6 @@ Environment:
   HOST, PORT               Web UI bind address (default: 127.0.0.1:8480)
   LOG_LEVEL                debug | info | warn | error
 `;
-
-const VERSION = "0.1.16";
 
 async function serve(ctx: AppContext): Promise<void> {
   const app = createApp(ctx);
