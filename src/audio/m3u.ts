@@ -310,10 +310,16 @@ export async function ensureAudioFromPlaylist(
 
   let body: string;
   try {
-    // Player requests the playlist with Accept: */*, Referer = article page, and
-    // viewed_ids containing this book's numeric id.
+    // Player requests the playlist with Accept: */*, Referer = article page,
+    // viewed_ids + PHPSESSID (from the last 4read hit) + cf_clearance when present.
     const referer = bookPageReferer(book, config);
+    await fetcher.ensurePhpSession(referer);
     fetcher.jar.appendViewedId(book.source_id);
+    if (!fetcher.jar.phpSessionId()) {
+      log.debug(`playlist for ${book.source_id}: no PHPSESSID in jar yet — requesting anyway`);
+    } else {
+      log.debug(`playlist cookies include PHPSESSID (+ cf_clearance=${fetcher.jar.hasClearance()})`);
+    }
     const text = await fetcher.getText(playlistUrl, {
       purpose: "playlist",
       accept: "*/*",

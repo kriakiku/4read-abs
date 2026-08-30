@@ -194,6 +194,22 @@ describe("cookie jar", () => {
     jar.appendViewedId(5546);
     expect(jar.header()).toBe("viewed_ids=5546,8054");
   });
+
+  test("PHPSESSID is kept across restarts and empty Flare dumps", async () => {
+    const h = await harness();
+    const jar = new CookieJar(h.db);
+    jar.set([
+      { name: "PHPSESSID", value: "abc123", expires: -1 },
+      { name: "cf_clearance", value: "cf1" },
+    ]);
+    expect(jar.phpSessionId()).toBe("abc123");
+    jar.set([{ name: "PHPSESSID", value: "" }]);
+    expect(jar.phpSessionId()).toBe("abc123");
+
+    const reopened = new CookieJar(h.db);
+    expect(reopened.phpSessionId()).toBe("abc123");
+    expect(reopened.hasClearance()).toBe(true);
+  });
 });
 
 describe("adaptive limiter", () => {

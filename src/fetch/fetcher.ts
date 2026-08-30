@@ -145,6 +145,21 @@ export class Fetcher {
   }
 
   /**
+   * Make sure the jar has a PHPSESSID from 4read before playlist/media calls.
+   * Hits `pageUrl` (article page) once when missing; soft-fails so audio can still try.
+   */
+  async ensurePhpSession(pageUrl: string): Promise<boolean> {
+    if (this.jar.phpSessionId()) return true;
+    try {
+      await this.getText(pageUrl);
+    } catch (error) {
+      log.debug(`PHPSESSID warm-up failed for ${pageUrl}: ${String(error)}`);
+      return Boolean(this.jar.phpSessionId());
+    }
+    return Boolean(this.jar.phpSessionId());
+  }
+
+  /**
    * Fetch a page as text. Tries a plain request first (cheap when the origin allows it) and
    * escalates to FlareSolverr on a challenge. Once Bun's TLS fingerprint is rejected, further
    * direct probes are skipped for a while — clearance cookies cannot be reused across JA3s.
@@ -212,6 +227,8 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
+      // Always forward the jar (cf_clearance, PHPSESSID, viewed_ids, …) and merge whatever
+      // Chrome returns so PHPSESSID survives across playlist fetches.
       const result = await this.flare.get(url, {
         cookies: this.jar.list(),
         headers: flareHeadersFrom(headers),

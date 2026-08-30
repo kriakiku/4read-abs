@@ -243,6 +243,14 @@ describe("playlist audio fetch", () => {
           referer: request.headers.get("referer"),
           cookie: request.headers.get("cookie"),
         });
+        if (pathname.endsWith(".html")) {
+          return new Response("<html><body>ok</body></html>", {
+            headers: {
+              "content-type": "text/html",
+              "set-cookie": "PHPSESSID=sess-from-page; Path=/; HttpOnly",
+            },
+          });
+        }
         if (pathname.endsWith(".m3u")) {
           const base = `http://127.0.0.1:${origin.port}`;
           return new Response(`#EXTM3U\n${base}/a.mp3\n`, {
@@ -258,7 +266,10 @@ describe("playlist audio fetch", () => {
     servers.push(origin);
 
     const { fetcher } = await makeFetcher();
-    fetcher.jar.set([{ name: "viewed_ids", value: "100" }]);
+    fetcher.jar.set([
+      { name: "viewed_ids", value: "100" },
+      { name: "cf_clearance", value: "clear-1" },
+    ]);
     const config = configSchema.parse({
       source: { baseUrl: `http://127.0.0.1:${origin.port}` },
     });
@@ -271,6 +282,45 @@ describe("playlist audio fetch", () => {
       `http://127.0.0.1:${origin.port}/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.html`,
     );
     expect(playlistReq!.cookie).toContain("viewed_ids=100,6840");
+    expect(playlistReq!.cookie).toContain("cf_clearance=clear-1");
+    expect(playlistReq!.cookie).toContain("PHPSESSID=sess-from-page");
+    expect(fetcher.jar.phpSessionId()).toBe("sess-from-page");
+  });
+
+  test("playlist reuses PHPSESSID from an earlier 4read response", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-phpsess-"));
+    tempDirs.push(dir);
+    const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => i % 256);
+    const m3uCookies: string[] = [];
+
+    const origin = Bun.serve({
+      port: 0,
+      fetch(request): Response {
+        const { pathname } = new URL(request.url);
+        if (pathname.endsWith(".m3u")) {
+          m3uCookies.push(request.headers.get("cookie") ?? "");
+          const base = `http://127.0.0.1:${origin.port}`;
+          return new Response(`#EXTM3U\n${base}/a.mp3\n`, {
+            headers: { "content-type": "audio/x-mpegurl" },
+          });
+        }
+        if (pathname.endsWith(".mp3")) {
+          return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
+        }
+        return new Response("page", {
+          headers: { "set-cookie": "PHPSESSID=already-have; Path=/" },
+        });
+      },
+    });
+    servers.push(origin);
+
+    const { fetcher } = await makeFetcher();
+    fetcher.jar.set([{ name: "PHPSESSID", value: "already-have" }]);
+    const config = configSchema.parse({
+      source: { baseUrl: `http://127.0.0.1:${origin.port}` },
+    });
+    await ensureAudioFromPlaylist(book(), join(dir, "book"), config, fetcher);
+    expect(m3uCookies[0]).toContain("PHPSESSID=already-have");
   });
 
   test("falls back to FlareSolverr Chrome download for challenged media", async () => {

@@ -51,10 +51,30 @@ export class CookieJar {
     return this.cookies.has("cf_clearance");
   }
 
+  /** PHP session id from the last successful 4read response, if we have one. */
+  phpSessionId(): string | null {
+    this.dropExpired();
+    const value = this.cookies.get("PHPSESSID")?.value?.trim();
+    return value ? value : null;
+  }
+
+  get(name: string): string | null {
+    this.dropExpired();
+    const value = this.cookies.get(name)?.value;
+    return value && value.length > 0 ? value : null;
+  }
+
   set(cookies: StoredCookie[]): void {
     for (const cookie of cookies) {
       if (!cookie.name) continue;
-      this.cookies.set(cookie.name, { name: cookie.name, value: cookie.value, expires: cookie.expires });
+      // FlareSolverr sometimes returns an empty PHPSESSID in a partial dump — keep the last good one.
+      if (cookie.name === "PHPSESSID" && !cookie.value?.trim() && this.cookies.has("PHPSESSID")) {
+        continue;
+      }
+      // Session cookies often arrive with expires=-1; treat those as non-expiring.
+      const expires =
+        cookie.expires !== undefined && cookie.expires > 0 ? cookie.expires : undefined;
+      this.cookies.set(cookie.name, { name: cookie.name, value: cookie.value, expires });
     }
     this.dropExpired();
     this.persist();
@@ -62,7 +82,12 @@ export class CookieJar {
 
   /** Parse `set-cookie` headers from a direct response. */
   absorbSetCookie(headers: Headers): void {
-    const raw = headers.getSetCookie?.() ?? [];
+    const raw: string[] = [...(headers.getSetCookie?.() ?? [])];
+    // Older runtimes may only expose a single joined set-cookie header.
+    if (raw.length === 0) {
+      const single = headers.get("set-cookie");
+      if (single) raw.push(single);
+    }
     if (raw.length === 0) return;
     const parsed: StoredCookie[] = [];
     for (const line of raw) {
