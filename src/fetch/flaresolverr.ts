@@ -151,6 +151,7 @@ export class FlareSolverrClient {
     if (result.status !== "ok" && this.session) {
       log.warn(`retrying without session after error: ${result.message ?? "unknown"}`);
       this.session = null;
+      this.warmedHosts.clear();
       delete payload.session;
       result = await this.command(payload, this.maxTimeoutMs + 15_000);
     }
@@ -183,11 +184,7 @@ export class FlareSolverrClient {
     const started = Date.now();
     const extra: Record<string, unknown> = {};
     if (options.cookies?.length) {
-      extra.cookies = options.cookies.map((c) => ({
-        name: c.name,
-        value: c.value,
-        ...(c.expires !== undefined ? { expires: c.expires } : {}),
-      }));
+      extra.cookies = toFlareCookies(options.cookies);
     }
     if (options.headers && Object.keys(options.headers).length > 0) {
       extra.headers = options.headers;
@@ -219,11 +216,7 @@ export class FlareSolverrClient {
     return {
       status: solution.status ?? 0,
       body: solution.response ?? "",
-      cookies: (solution.cookies ?? []).map((c) => ({
-        name: c.name,
-        value: c.value,
-        expires: c.expires,
-      })),
+      cookies: fromFlareCookies(solution.cookies),
       userAgent: solution.userAgent,
       har: solution.har,
       executeJsResult: jsResult,
@@ -251,11 +244,7 @@ export class FlareSolverrClient {
     try {
       const extra: Record<string, unknown> = { download: true };
       if (options.cookies?.length) {
-        extra.cookies = options.cookies.map((c) => ({
-          name: c.name,
-          value: c.value,
-          ...(c.expires !== undefined ? { expires: c.expires } : {}),
-        }));
+        extra.cookies = toFlareCookies(options.cookies);
       }
       if (options.headers && Object.keys(options.headers).length > 0) {
         extra.headers = options.headers;
@@ -309,25 +298,51 @@ export class FlareSolverrClient {
 
   /**
    * Solve Cloudflare (if any) for a media CDN origin inside the Chrome session so later
-   * `download: true` carries that host's clearance cookies.
+   * `download: true` carries that host's clearance cookies (separate from 4read.org).
    */
-  async warmHost(url: string): Promise<boolean> {
+  async warmHost(
+    url: string,
+    options: { force?: boolean } = {},
+  ): Promise<{ ok: boolean; cookies: StoredCookie[] }> {
     let origin: string;
     try {
       origin = new URL(url).origin;
     } catch {
-      return false;
+      return { ok: false, cookies: [] };
     }
-    if (this.warmedHosts.has(origin)) return true;
+    if (!options.force && this.warmedHosts.has(origin)) {
+      return { ok: true, cookies: [] };
+    }
     try {
-      log.info(`Chrome warm CDN origin ${origin}`);
+      log.info(`Chrome warm CDN origin ${origin}${options.force ? " (force)" : ""}`);
       const result = await this.get(`${origin}/`, { disableMedia: true });
+      const challenged =
+        result.status === 403 ||
+        result.status === 503 ||
+        /just a moment|cf-browser-verification|_cf_chl|challenge-platform/i.test(result.body.slice(0, 4000));
+      if (challenged) {
+        this.warmedHosts.delete(origin);
+        log.warn(`Chrome warm CDN origin still challenged → HTTP ${result.status}`);
+        return { ok: false, cookies: result.cookies };
+      }
       this.warmedHosts.add(origin);
-      log.info(`Chrome warm CDN origin done → HTTP ${result.status}`);
-      return true;
+      log.info(
+        `Chrome warm CDN origin done → HTTP ${result.status} (${result.cookies.filter((c) => c.name === "cf_clearance").length} clearance cookie(s))`,
+      );
+      return { ok: true, cookies: result.cookies };
     } catch (error) {
+      this.warmedHosts.delete(origin);
       log.warn(`Chrome warm CDN origin failed for ${origin}: ${String(error)}`);
-      return false;
+      return { ok: false, cookies: [] };
+    }
+  }
+
+  /** Forget a CDN warm so the next download re-solves that origin's CF cookies. */
+  invalidateWarm(url: string): void {
+    try {
+      this.warmedHosts.delete(new URL(url).origin);
+    } catch {
+      // ignore bad urls
     }
   }
 
@@ -370,11 +385,7 @@ export class FlareSolverrClient {
         disableMedia: true,
       };
       if (options.cookies?.length) {
-        extra.cookies = options.cookies.map((c) => ({
-          name: c.name,
-          value: c.value,
-          ...(c.expires !== undefined ? { expires: c.expires } : {}),
-        }));
+        extra.cookies = toFlareCookies(options.cookies);
       }
       const result = await this.requestGet(pageUrl, extra);
       if (result.status !== "ok" || !result.solution) {
@@ -428,6 +439,7 @@ export class FlareSolverrClient {
   }
 
   async destroy(): Promise<void> {
+    this.warmedHosts.clear();
     if (!this.session) return;
     const session = this.session;
     this.session = null;
@@ -438,6 +450,24 @@ export class FlareSolverrClient {
       log.debug(`session destroy failed: ${String(error)}`);
     }
   }
+}
+
+function toFlareCookies(cookies: StoredCookie[]): FlareCookie[] {
+  return cookies.map((c) => ({
+    name: c.name,
+    value: c.value,
+    ...(c.domain ? { domain: c.domain } : {}),
+    ...(c.expires !== undefined ? { expires: c.expires } : {}),
+  }));
+}
+
+function fromFlareCookies(cookies: FlareCookie[] | undefined): StoredCookie[] {
+  return (cookies ?? []).map((c) => ({
+    name: c.name,
+    value: c.value,
+    expires: c.expires,
+    domain: c.domain,
+  }));
 }
 
 function extractDownloadBytes(solution: FlareSolution | undefined): Uint8Array | null {

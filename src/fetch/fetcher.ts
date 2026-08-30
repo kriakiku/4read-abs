@@ -91,7 +91,13 @@ export class Fetcher {
     private readonly db: Db,
     private readonly config: Config,
   ) {
-    this.jar = new CookieJar(db);
+    let primaryHost: string | null = null;
+    try {
+      primaryHost = new URL(config.source.baseUrl).hostname;
+    } catch {
+      primaryHost = null;
+    }
+    this.jar = new CookieJar(db, primaryHost);
     this.limiter = new AdaptiveLimiter({
       minIntervalMs: config.source.minIntervalMs,
       maxIntervalMs: config.source.maxIntervalMs,
@@ -253,7 +259,7 @@ export class Fetcher {
     try {
       log.info(`Chrome executeJs m3u from homepage → ${playlistUrl}`);
       const result = await this.flare.get(this.homeUrl(), {
-        cookies: this.jar.list(),
+        cookies: this.jar.list(this.homeUrl()),
         disableMedia: true,
         executeJs: playlistFetchExecuteJs(playlistUrl),
       });
@@ -381,9 +387,9 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
-      // Forward the full jar (whatever 4read Set-Cookie last gave us) and merge Chrome's cookies back.
+      // Forward host-matching jar cookies (never plant 4read cf_clearance on CDN).
       const result = await this.flare.get(url, {
-        cookies: this.jar.list(),
+        cookies: this.jar.list(url),
         headers: flareHeadersFrom(headers),
         waitInSeconds: options.waitInSeconds,
         recordHar: options.recordHar,
@@ -493,7 +499,7 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     const file = await this.flare.fetchDownload(url, {
-      cookies: this.jar.list(),
+      cookies: this.jar.list(url),
       headers: flareHeadersFrom(headers),
       minBytes: 8,
     });
@@ -605,16 +611,9 @@ export class Fetcher {
     try {
       let file: Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>> = null;
       if (purpose === "media") {
-        // CDN CF cookies first (leaves tab on reasd.org/), then homepage so download:true
-        // sends Referer: https://4read.org/ — no Playerjs. Never re-open the book HTML here.
-        await this.flare.warmHost(url);
-        this.audioContextOnHome = false;
-        await this.landOnHome();
-        file = await this.flare.fetchDownload(url, {
-          cookies: this.jar.list(),
-          headers: flareHeadersFrom(this.browserHeaders({ purpose: "playlist" })),
-          minBytes: this.config.audio.minFileBytes,
-        });
+        // CDN has its own CF zone/cookies (reasd.org ≠ 4read.org). Warm CDN first,
+        // then homepage for Referer — never inject 4read cf_clearance into CDN downloads.
+        file = await this.downloadMediaViaChrome(url);
         this.audioContextOnHome = false; // tab navigated to the mp3 URL
       } else {
         file = await this.flare.fetchImage(url);
@@ -639,16 +638,52 @@ export class Fetcher {
     }
   }
 
+  /**
+   * CDN mp3 path: warm reasd.org CF cookies in Chrome, land on 4read homepage (Referer),
+   * then download:true with only CDN-scoped jar cookies. Retry once with forced re-warm
+   * if the first attempt returns no usable bytes.
+   */
+  private async downloadMediaViaChrome(
+    url: string,
+  ): Promise<Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>>> {
+    const headers = flareHeadersFrom(this.browserHeaders({ purpose: "playlist" }));
+    const attempt = async (forceWarm: boolean) => {
+      const warm = await this.flare.warmHost(url, { force: forceWarm });
+      if (warm.cookies.length) this.jar.set(warm.cookies);
+      this.audioContextOnHome = false;
+      await this.landOnHome();
+      const cdnCookies = this.jar.list(url);
+      log.info(
+        `Chrome DOWNLOAD with ${cdnCookies.length} CDN cookie(s) for ${new URL(url).host}` +
+          (cdnCookies.some((c) => c.name === "cf_clearance") ? " (has cf_clearance)" : " (no cf_clearance yet)"),
+      );
+      return this.flare.fetchDownload(url, {
+        cookies: cdnCookies,
+        headers,
+        minBytes: this.config.audio.minFileBytes,
+      });
+    };
+
+    let file = await attempt(false);
+    if (!file) {
+      log.warn(`CDN download miss for ${url}; re-warming CDN CF cookies and retrying once`);
+      this.flare.invalidateWarm(url);
+      file = await attempt(true);
+    }
+    return file;
+  }
+
   /** Ask FlareSolverr to solve a challenge for the origin and keep the resulting cookies. */
   async refreshClearance(): Promise<boolean> {
     if (!this.flareConfigured) return false;
     try {
       await this.limiter.acquire({ ignoreCooldown: true });
-      const result = await this.flare.get(`${this.config.source.baseUrl}/`);
+      const home = this.homeUrl();
+      const result = await this.flare.get(home);
       this.jar.setUserAgent(result.userAgent);
       if (result.cookies.length) this.jar.set(result.cookies);
       this.blockDirectProbes("clearance refresh (Bun cannot reuse cookies)");
-      return this.jar.hasClearance();
+      return this.jar.hasClearance(home);
     } catch (error) {
       log.warn(`clearance refresh failed: ${String(error)}`);
       return false;

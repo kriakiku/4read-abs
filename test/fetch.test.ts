@@ -157,13 +157,13 @@ function config(h: Harness, overrides: Record<string, unknown> = {}): Config {
 describe("cookie jar", () => {
   test("survives a restart and reports clearance", async () => {
     const h = await harness();
-    const jar = new CookieJar(h.db);
+    const jar = new CookieJar(h.db, "4read.org");
     expect(jar.hasClearance()).toBe(false);
 
     jar.set([{ name: "cf_clearance", value: "abc", expires: Math.floor(Date.now() / 1000) + 600 }]);
     jar.setUserAgent("UA/1.0");
 
-    const reopened = new CookieJar(h.db);
+    const reopened = new CookieJar(h.db, "4read.org");
     expect(reopened.hasClearance()).toBe(true);
     expect(reopened.userAgent).toBe("UA/1.0");
     expect(reopened.header()).toContain("cf_clearance=abc");
@@ -178,13 +178,38 @@ describe("cookie jar", () => {
 
   test("absorbs set-cookie headers", async () => {
     const h = await harness();
-    const jar = new CookieJar(h.db);
+    const jar = new CookieJar(h.db, "example.com");
     const headers = new Headers();
     headers.append("set-cookie", "a=1; Path=/; Max-Age=600");
     headers.append("set-cookie", "b=2; Path=/");
-    jar.absorbSetCookie(headers);
-    expect(jar.header()).toContain("a=1");
-    expect(jar.header()).toContain("b=2");
+    jar.absorbSetCookie(headers, "https://example.com/");
+    expect(jar.header("https://example.com/")).toContain("a=1");
+    expect(jar.header("https://example.com/")).toContain("b=2");
+  });
+
+  test("keeps separate cf_clearance per domain (source vs CDN)", async () => {
+    const h = await harness();
+    const jar = new CookieJar(h.db, "4read.org");
+    jar.set([
+      { name: "cf_clearance", value: "site-cf", domain: ".4read.org" },
+      { name: "PHPSESSID", value: "php1", domain: "4read.org" },
+      { name: "cf_clearance", value: "cdn-cf", domain: ".reasd.org" },
+    ]);
+    expect(jar.header("https://4read.org/book.html")).toContain("cf_clearance=site-cf");
+    expect(jar.header("https://4read.org/book.html")).toContain("PHPSESSID=php1");
+    expect(jar.header("https://4read.org/book.html")).not.toContain("cdn-cf");
+    expect(jar.header("https://reasd.org/2901/01.mp3")).toContain("cf_clearance=cdn-cf");
+    expect(jar.header("https://reasd.org/2901/01.mp3")).not.toContain("site-cf");
+    expect(jar.header("https://reasd.org/2901/01.mp3")).not.toContain("PHPSESSID");
+    expect(jar.list("https://reasd.org/x").every((c) => !c.domain || c.domain.includes("reasd"))).toBe(true);
+  });
+
+  test("legacy undomain cookies stay on primary host only", async () => {
+    const h = await harness();
+    const jar = new CookieJar(h.db, "4read.org");
+    jar.set([{ name: "cf_clearance", value: "legacy" }]);
+    expect(jar.header("https://4read.org/")).toContain("legacy");
+    expect(jar.header("https://reasd.org/")).toBeUndefined();
   });
 
   test("flareHeadersFrom strips sec-fetch-* and Referer (rejected by flaresolverr-go)", () => {
@@ -208,7 +233,7 @@ describe("cookie jar", () => {
 
   test("PHPSESSID is kept across restarts and empty Flare dumps", async () => {
     const h = await harness();
-    const jar = new CookieJar(h.db);
+    const jar = new CookieJar(h.db, "4read.org");
     jar.set([
       { name: "PHPSESSID", value: "abc123", expires: -1 },
       { name: "cf_clearance", value: "cf1" },
@@ -217,7 +242,7 @@ describe("cookie jar", () => {
     jar.set([{ name: "PHPSESSID", value: "" }]);
     expect(jar.phpSessionId()).toBe("abc123");
 
-    const reopened = new CookieJar(h.db);
+    const reopened = new CookieJar(h.db, "4read.org");
     expect(reopened.phpSessionId()).toBe("abc123");
     expect(reopened.hasClearance()).toBe(true);
   });
