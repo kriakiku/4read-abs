@@ -184,7 +184,7 @@
       .audio-files .audio-ok { color: var(--ok); }
       .audio-files .audio-pending { color: var(--muted); }
       .audio-summary { color: var(--muted); font-size: 12px; margin-top: 4px; }
-      .empty { color: var(--muted); font-style: italic; }
+      .empty { color: var(--muted); font-style: italic; padding: 14px 18px; }
       pre.logs {
         margin: 0;
         max-height: 320px;
@@ -201,18 +201,78 @@
       .msg.ok { color: var(--ok); }
       .msg.err { color: var(--err); }
       .cover {
-        width: 44px;
-        height: 66px;
+        width: 36px;
+        height: 54px;
         object-fit: cover;
-        border-radius: 4px;
+        border-radius: 3px;
         background: var(--panel);
         border: 1px solid var(--border);
+        display: block;
       }
-      /* A cover that is not cached yet should read as an empty slot, not a broken image. */
       .cover--missing { visibility: hidden; }
-      .item-grid { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: start; }
-      .tabs { display: flex; gap: 6px; }
-      .tabs button.active { border-color: var(--accent); color: var(--accent); }
+      .queue-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 0 !important;
+      }
+      .queue-table {
+        width: max-content;
+        min-width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .queue-table th,
+      .queue-table td {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
+      .queue-table th {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.45px;
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .queue-table tbody tr:hover { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+      .queue-table .col-cover { width: 36px; padding-right: 4px; }
+      .queue-table .col-title {
+        white-space: normal;
+        min-width: 180px;
+        max-width: 280px;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+      .queue-table .col-meta {
+        color: var(--muted);
+        font-size: 12px;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .queue-table .col-actions .row { flex-wrap: nowrap; }
+      .status-pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+      .status-pill.new { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+      .status-pill.accepted { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+      .status-pill.prepared { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+      .status-pill.synced { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+      .status-pill.ignored { color: var(--muted); }
+      .audio-cell { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+      .audio-cell.ok { color: var(--ok); }
     </style>
   </head>
   <body>
@@ -246,15 +306,28 @@
 
       <section>
         <h2>
-          New from subscriptions
-          <span class="tabs" id="queue-tabs">
-            <button data-state="new" class="active">New</button>
-            <button data-state="accepted">Accepted</button>
-            <button data-state="ignored">Ignored</button>
-            <button data-state="all">All</button>
+          Subscription queue
+          <span class="row">
+            <button id="btn-queue-refresh">Refresh</button>
           </span>
         </h2>
-        <div class="body"><div class="list" id="queue-list"></div></div>
+        <div class="body queue-scroll">
+          <table class="queue-table">
+            <thead>
+              <tr>
+                <th class="col-cover"></th>
+                <th>Title</th>
+                <th>Author</th>
+                <th>Narrator</th>
+                <th>Status</th>
+                <th>Audio</th>
+                <th>Match</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="queue-list"></tbody>
+          </table>
+        </div>
       </section>
 
       <section>
@@ -376,7 +449,7 @@
         cards.append(card("Authors", status.catalog.authors, `${status.catalog.series} series`));
         cards.append(card("Narrators", status.catalog.narrators, `${status.preferredNarrators.length} preferred`));
         cards.append(
-          card("New releases", status.queue.new ?? 0, `accepted ${status.queue.accepted ?? 0}, synced ${status.queue.synced ?? 0}`),
+          card("New releases", status.queue.new ?? 0, `downloading ${status.queue.accepted ?? 0}, in ABS ${status.queue.synced ?? 0}`),
         );
         cards.append(
           card(
@@ -410,95 +483,109 @@
         if (atBottom) element.scrollTop = element.scrollHeight;
       }
 
-      let queueState = "new";
+      function statusLabel(state) {
+        switch (state) {
+          case "accepted":
+            return "Downloading";
+          case "prepared":
+            return "In library";
+          case "synced":
+            return "In ABS";
+          case "ignored":
+            return "Ignored";
+          default:
+            return "New";
+        }
+      }
 
       async function loadQueue() {
-        const data = await api(`/api/queue?state=${encodeURIComponent(queueState)}`);
+        const data = await api("/api/queue?state=all");
         const list = $("queue-list");
         list.replaceChildren();
         if (data.entries.length === 0) {
-          const empty = document.createElement("span");
-          empty.className = "empty";
-          empty.textContent = "Empty.";
-          list.append(empty);
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 8;
+          cell.className = "empty";
+          cell.textContent = "Queue is empty.";
+          row.append(cell);
+          list.append(row);
           return;
         }
 
         for (const entry of data.entries) {
           const book = entry.book;
-          const item = document.createElement("div");
-          item.className = "item";
+          const state = entry.state || "new";
+          const row = document.createElement("tr");
 
-          const grid = document.createElement("div");
-          grid.className = "item-grid";
-
+          const coverCell = document.createElement("td");
+          coverCell.className = "col-cover";
           const cover = document.createElement("img");
           cover.className = "cover";
           cover.loading = "lazy";
           cover.alt = "";
-          // Served from our own cache: fetching 4read.org directly from the browser would run
-          // into the same Cloudflare challenge.
           if (entry.coverUrl || book?.cover_url) {
             cover.src = entry.coverUrl || `/api/covers/${entry.source_id}`;
             cover.addEventListener("error", () => cover.classList.add("cover--missing"));
+          } else {
+            cover.classList.add("cover--missing");
           }
-          grid.append(cover);
+          coverCell.append(cover);
+          row.append(coverCell);
 
-          const middle = document.createElement("div");
-          const title = document.createElement("div");
-          title.className = "title";
-          title.textContent = book?.title || `#${entry.source_id}`;
-          middle.append(title);
-
-          const meta = document.createElement("div");
-          meta.className = "meta";
-          const bits = [];
-          bits.push(`State: ${entry.state || "new"}`);
-          if (book?.authors?.length) bits.push(`Author: ${book.authors.join(", ")}`);
-          if (book?.narrators?.length) bits.push(`Narrator: ${book.narrators.join(", ")}`);
-          if (book?.series_name) bits.push(`Series: ${book.series_name}${book.series_seq ? ` #${book.series_seq}` : ""}`);
-          const length = duration(book?.duration_sec);
-          if (length) bits.push(length);
-          if (book?.rating) bits.push(`★ ${book.rating}`);
-          bits.push(entry.reason);
-          for (const text of bits) {
-            const span = document.createElement("span");
-            span.textContent = text;
-            meta.append(span);
+          const titleCell = document.createElement("td");
+          titleCell.className = "col-title";
+          titleCell.textContent = book?.title || `#${entry.source_id}`;
+          if (book?.series_name) {
+            titleCell.title = `${book.series_name}${book.series_seq ? ` #${book.series_seq}` : ""}`;
           }
-          middle.append(meta);
+          row.append(titleCell);
 
-          if (book?.description) {
-            const description = document.createElement("div");
-            description.className = "desc";
-            description.textContent = book.description;
-            middle.append(description);
-          }
+          const authorCell = document.createElement("td");
+          authorCell.className = "col-meta";
+          authorCell.textContent = book?.authors?.join(", ") || "—";
+          authorCell.title = authorCell.textContent;
+          row.append(authorCell);
 
-          if (entry.audio?.files?.length) {
-            const summary = document.createElement("div");
-            summary.className = "audio-summary";
-            summary.textContent = `Audio: ${entry.audio.downloaded}/${entry.audio.total}${entry.audio.complete ? " (complete)" : ""}`;
-            middle.append(summary);
-            const ul = document.createElement("ul");
-            ul.className = "audio-files";
-            for (const file of entry.audio.files) {
-              const li = document.createElement("li");
-              li.className = file.status === "downloaded" ? "audio-ok" : "audio-pending";
-              const mark = document.createElement("span");
-              mark.className = "mark";
-              mark.textContent = file.status === "downloaded" ? "✓" : "·";
-              const label = document.createElement("span");
-              label.textContent = file.name;
-              label.title = file.file;
-              li.append(mark, label);
-              ul.append(li);
+          const narratorCell = document.createElement("td");
+          narratorCell.className = "col-meta";
+          narratorCell.textContent = book?.narrators?.join(", ") || "—";
+          narratorCell.title = narratorCell.textContent;
+          row.append(narratorCell);
+
+          const statusCell = document.createElement("td");
+          const status = document.createElement("span");
+          status.className = `status-pill ${state}`;
+          status.textContent = statusLabel(state);
+          statusCell.append(status);
+          row.append(statusCell);
+
+          const audioCell = document.createElement("td");
+          audioCell.className = "audio-cell";
+          if (state === "synced") {
+            audioCell.classList.add("ok");
+            audioCell.textContent = "in ABS";
+          } else if (entry.audio?.total) {
+            audioCell.textContent = `${entry.audio.downloaded}/${entry.audio.total}`;
+            if (entry.audio.complete) audioCell.classList.add("ok");
+            if (entry.audio.files?.length) {
+              audioCell.title = entry.audio.files
+                .map((f) => `${f.status === "downloaded" ? "✓" : "·"} ${f.name}`)
+                .join("\n");
             }
-            middle.append(ul);
+          } else {
+            audioCell.textContent = "—";
           }
+          row.append(audioCell);
 
-          grid.append(middle);
+          const reasonCell = document.createElement("td");
+          reasonCell.className = "col-meta";
+          reasonCell.textContent = entry.reason || "—";
+          reasonCell.title = entry.reason || "";
+          row.append(reasonCell);
 
+          const actionsCell = document.createElement("td");
+          actionsCell.className = "col-actions";
           const actions = document.createElement("div");
           actions.className = "row";
           if (book?.url) {
@@ -509,9 +596,11 @@
             link.textContent = "4read";
             actions.append(link);
           }
-          for (const [action, label] of [["accept", "Accept"], ["ignore", "Ignore"], ["reset", "Reset"]]) {
-            // Gate on the entry's own state so the All tab does not re-offer Accept on approved books.
-            const state = entry.state || "new";
+          for (const [action, label] of [
+            ["accept", "Accept"],
+            ["ignore", "Ignore"],
+            ["reset", "Reset"],
+          ]) {
             if (action === "accept" && ["accepted", "prepared", "synced"].includes(state)) continue;
             if (action === "ignore" && state === "ignored") continue;
             if (action === "reset" && state === "new") continue;
@@ -534,9 +623,13 @@
             const button = document.createElement("button");
             button.textContent = "Delete";
             button.className = "danger";
-            button.title = "Remove from queue and wipe local staging (audio, cover, metadata) so Accept can re-download";
+            button.title = "Remove from queue and wipe local staging";
             button.addEventListener("click", async () => {
-              if (!confirm(`Delete #${entry.source_id} from the queue?\nLocal staging (audio + cover preview) will be wiped so Accept can re-download.`)) {
+              if (
+                !confirm(
+                  `Delete #${entry.source_id} from the queue?\nLocal staging (audio + cover preview) will be wiped.`,
+                )
+              ) {
                 return;
               }
               button.disabled = true;
@@ -551,9 +644,9 @@
             });
             actions.append(button);
           }
-          grid.append(actions);
-          item.append(grid);
-          list.append(item);
+          actionsCell.append(actions);
+          row.append(actionsCell);
+          list.append(row);
         }
       }
 
@@ -746,17 +839,11 @@
             button.disabled = false;
           }
           await loadStatus();
-        });
-      }
-
-      for (const button of $("queue-tabs").querySelectorAll("button")) {
-        button.addEventListener("click", async () => {
-          for (const other of $("queue-tabs").querySelectorAll("button")) other.classList.remove("active");
-          button.classList.add("active");
-          queueState = button.dataset.state;
           await loadQueue();
         });
       }
+
+      $("btn-queue-refresh").addEventListener("click", () => void loadQueue());
 
       bindConfigEditor();
 
@@ -764,6 +851,7 @@
         await Promise.allSettled([loadStatus(), loadConfig(), loadQueue(), loadLogs()]);
         setInterval(() => {
           void loadStatus();
+          void loadQueue();
           void loadLogs();
         }, 5000);
       }

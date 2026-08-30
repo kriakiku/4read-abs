@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { AppContext } from "../context.ts";
 import { logger } from "../log.ts";
-import { ensureAudioFromPlaylist } from "../audio/m3u.ts";
+import { ensureAudioFromPlaylist, clearDownloadedAudio } from "../audio/m3u.ts";
 import { downloadCoverIfStale, type DownloadedCover } from "../covers.ts";
 import { setMeta } from "../db.ts";
 import { getBook, type BookWithPeople } from "../catalog/store.ts";
@@ -129,6 +129,7 @@ async function syncOneItem(
   // Sidecar/cover already written is not enough — keep trying until the library folder has media.
   const libraryHasMedia = await folderHasMedia(targetDir);
   if (!reconciled.changed && link?.written_hash === hash && libraryHasMedia) {
+    await releaseStagingAudio(ctx, book, targetDir);
     return result;
   }
 
@@ -147,6 +148,10 @@ async function syncOneItem(
 
   result.wrote = placement.copied.length > 0 || placement.linked.length > 0;
   recordWrite(ctx.db, book.source_id, item.id, reconciled.payload, hash);
+
+  if (placeMode === "full" && (audioCount > 0 || staged.mediaFiles.length > 0) && !result.error) {
+    await releaseStagingAudio(ctx, book, targetDir);
+  }
 
   if (result.wrote && ctx.config.audiobookshelf.triggerScan) {
     await ctx.abs.scanItem(item.id);
@@ -338,6 +343,7 @@ export async function prepareAcceptedBook(ctx: AppContext, sourceId: number): Pr
     const targetDir = row?.note?.trim() || resolve(libraryRoot, targetFolderFor(book, ctx.config));
     if (await folderHasMedia(targetDir)) {
       log.info(`prepare ${sourceId}: library folder already has media`);
+      await releaseStagingAudio(ctx, book, targetDir);
       return { ok: true, created: false, audioFiles: 0, targetDir };
     }
 
@@ -361,6 +367,7 @@ export async function prepareAcceptedBook(ctx: AppContext, sourceId: number): Pr
       return { ok: false, created: false, audioFiles: audioCount, targetDir, error: placement.errors.join("; ") };
     }
     log.info(`prepare ${sourceId}: placed ${audioCount} audio file(s) into ${targetDir}`);
+    await releaseStagingAudio(ctx, book, targetDir);
     return { ok: true, created: true, audioFiles: audioCount, targetDir };
   }
 
@@ -373,10 +380,30 @@ export async function prepareAcceptedBook(ctx: AppContext, sourceId: number): Pr
   if (placement.errors.length > 0) {
     return { ok: false, created: false, audioFiles: audioCount, targetDir, error: placement.errors.join("; ") };
   }
-  setQueueState(ctx, sourceId, "prepared", targetDir);
+  if (audioCount > 0 || staged.mediaFiles.length > 0) {
+    await releaseStagingAudio(ctx, book, targetDir);
+  } else {
+    setQueueState(ctx, sourceId, "prepared", targetDir);
+  }
   log.info(
     `prepare ${sourceId}: created folder ${targetDir} with ${audioCount} audio file(s)` +
-      (audioCount === 0 ? " (metadata/cover only — audio failed or empty playlist)" : ""),
+      (audioCount === 0 ? " (metadata/cover only — audio failed or empty playlist)" : " → synced, staging audio cleared"),
   );
   return { ok: true, created: true, audioFiles: audioCount, targetDir };
+}
+
+/**
+ * After media is hardlinked/copied into the ABS library folder, drop staging mp3s
+ * (safe with hardlinks) and mark the queue entry as synced.
+ */
+async function releaseStagingAudio(
+  ctx: AppContext,
+  book: BookWithPeople,
+  libraryDir: string,
+): Promise<void> {
+  const removed = await clearDownloadedAudio(stagingDirFor(book, ctx.config));
+  setQueueState(ctx, book.source_id, "synced", libraryDir);
+  if (removed > 0) {
+    log.info(`staging audio cleared for ${book.source_id} after ABS place (${removed} file(s))`);
+  }
 }

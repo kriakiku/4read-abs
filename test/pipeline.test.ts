@@ -473,6 +473,8 @@ describe("audiobookshelf sync", () => {
     const result = await syncLibrary(fake.ctx);
     expect(result.created).toBe(1);
     expect((await readdir(folder)).filter((name) => name.endsWith(".mp3"))).toEqual(["0001-track.mp3"]);
+    const entry = (await listQueue(fake.ctx)).find((row) => row.source_id === 6840);
+    expect(entry?.state).toBe("synced");
   });
 });
 
@@ -552,6 +554,14 @@ describe("http api", () => {
       "1 - Всі молоді чуваки Перший рік",
     );
     expect((await readdir(folder)).filter((name) => name.endsWith(".mp3"))).toEqual(["0001-track.mp3"]);
+
+    const queue = await listQueue(fake.ctx);
+    const entry = queue.find((row) => row.source_id === 6840);
+    expect(entry?.state).toBe("synced");
+
+    const staging = join(fake.dir, "staging", "6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik");
+    const stagedAudio = (await readdir(staging).catch(() => [])).filter((name) => name.endsWith(".mp3"));
+    expect(stagedAudio).toEqual([]);
   });
 
   test("queue actions are exposed over http", async () => {
