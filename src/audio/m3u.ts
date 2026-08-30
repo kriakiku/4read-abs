@@ -368,10 +368,12 @@ export async function ensureAudioFromPlaylist(
     }
   }
 
-  log.info(`audio: loading book page for playlist discovery ${book.source_id} → ${referer}`);
+  log.info(`audio: loading book page for playlist discovery ${book.source_id} → page=${referer}`);
 
   let playlistUrl = constructedUrl;
   let body: string | null = null;
+  /** How we chose the m3u URL / body: har | playerjs | constructed */
+  let discovery: "har" | "playerjs" | "constructed" | null = constructedUrl ? "constructed" : null;
 
   try {
     const page = await fetcher.warmBookPage(referer);
@@ -380,14 +382,32 @@ export async function ensureAudioFromPlaylist(
       if (fromHar) {
         playlistUrl = fromHar.url;
         body = fromHar.body;
-        log.info(`audio: got m3u from Chrome HAR for ${book.source_id}`);
+        discovery = "har";
+        log.info(
+          `audio: m3u source=har (Chrome network while loading page) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+        );
+      } else {
+        log.info(
+          `audio: HAR present but no /m33u2/*.m3u entry for ${book.source_id} page=${referer}`,
+        );
       }
+    } else {
+      log.info(
+        `audio: no HAR from FlareSolverr for ${book.source_id}; trying Playerjs HTML then constructed URL page=${referer}`,
+      );
     }
     if (!body && page?.body) {
       const fromHtml = extractPlaylistUrlFromHtml(page.body, config.source.baseUrl);
       if (fromHtml) {
         playlistUrl = fromHtml;
-        log.info(`audio: playlist URL from player HTML → ${playlistUrl}`);
+        discovery = "playerjs";
+        log.info(
+          `audio: m3u source=playerjs (URL from Playerjs file= in HTML) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+        );
+      } else {
+        log.info(
+          `audio: no Playerjs m3u URL in HTML for ${book.source_id}; will use constructed path page=${referer}`,
+        );
       }
     }
   } catch (error) {
@@ -395,13 +415,22 @@ export async function ensureAudioFromPlaylist(
   }
 
   if (!playlistUrl) {
-    log.warn(`audio skipped for ${book.source_id}: cannot resolve playlist URL`);
+    log.warn(
+      `audio skipped for ${book.source_id}: cannot resolve playlist URL page=${referer}`,
+    );
     return null;
   }
 
   if (!body) {
+    if (discovery === "constructed") {
+      log.info(
+        `audio: m3u source=constructed ({id}-{slug} from book URL) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+      );
+    }
     try {
-      log.info(`audio: fetching playlist via Chrome for ${book.source_id} → ${playlistUrl}`);
+      log.info(
+        `audio: fetching playlist via Chrome (source=${discovery ?? "unknown"}) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+      );
       const text = await fetcher.getText(playlistUrl, {
         purpose: "playlist",
         chrome: true,
@@ -410,21 +439,25 @@ export async function ensureAudioFromPlaylist(
       });
       body = extractPlaylistBody(text.body);
     } catch (error) {
-      log.warn(`playlist fetch failed for ${book.slug}: ${String(error)}`);
+      log.warn(
+        `playlist fetch failed for ${book.slug} (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer}: ${String(error)}`,
+      );
       return null;
     }
   }
 
   if (!body) {
     log.warn(
-      `playlist for ${book.slug} returned HTML/empty instead of M3U (${playlistUrl}) — Cloudflare or wrong URL?`,
+      `playlist for ${book.slug} returned HTML/empty instead of M3U (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer} — Cloudflare or wrong URL?`,
     );
     return null;
   }
 
   const tracks = parseM3u(body, playlistUrl);
   if (tracks.length === 0) {
-    log.warn(`playlist empty for ${book.slug} (${playlistUrl})`);
+    log.warn(
+      `playlist empty for ${book.slug} (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer}`,
+    );
     return null;
   }
 
