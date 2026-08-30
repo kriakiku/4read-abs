@@ -83,7 +83,8 @@ audio:
   # (article basename without .html, e.g. 5546-garri-garrison-stalevyj-schur-2025-mp3).
   # into the book folder (via Fetcher / FlareSolverr; soft-fail if missing).
   playlistTimeoutMs: 30000
-  trackTimeoutMs: 120000
+  # Per mp3 on reasd.org (nginx hotlink + Referer). Chapters are large; 45s page timeout is too short.
+  trackTimeoutMs: 600000
   minFileBytes: 1024
 
 sync:

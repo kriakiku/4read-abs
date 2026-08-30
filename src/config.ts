@@ -130,7 +130,8 @@ export const configSchema = z.object({
        * when Accept prepares a book / during library sync.
        */
       playlistTimeoutMs: z.number().int().min(1000).default(30_000),
-      trackTimeoutMs: z.number().int().min(1000).default(120_000),
+      /** Per-track CDN download (reasd.org can be slow; chapters are often 10–80 MB). */
+      trackTimeoutMs: z.number().int().min(1000).default(600_000),
       minFileBytes: z.number().int().min(1).default(1024),
     })
     .prefault({}),

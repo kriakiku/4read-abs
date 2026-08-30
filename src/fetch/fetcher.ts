@@ -651,12 +651,13 @@ export class Fetcher {
       headers["sec-fetch-site"] = "cross-site";
     }
 
-    log.info(`CDN track direct GET (Referer ${ref}) → ${url}`);
+    const timeoutMs = this.config.audio.trackTimeoutMs;
+    log.info(`CDN track direct GET (Referer ${ref}, timeout ${Math.round(timeoutMs / 1000)}s) → ${url}`);
     try {
       const response = await fetch(url, {
         headers,
         redirect: "follow",
-        signal: AbortSignal.timeout(this.config.source.requestTimeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const contentType = response.headers.get("content-type");
       const ms = (Bun.nanoseconds() - started) / 1e6;
