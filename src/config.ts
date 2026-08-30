@@ -132,6 +132,8 @@ export const configSchema = z.object({
       playlistTimeoutMs: z.number().int().min(1000).default(30_000),
       /** Per-track CDN download (reasd.org can be slow; chapters are often 10–80 MB). */
       trackTimeoutMs: z.number().int().min(1000).default(600_000),
+      /** How many CDN mp3s to download at once within one book (ENV: AUDIO_TRACK_CONCURRENCY). */
+      trackConcurrency: z.number().int().min(1).max(32).default(5),
       minFileBytes: z.number().int().min(1).default(1024),
     })
     .prefault({}),
@@ -244,6 +246,9 @@ function applyEnv(config: Config): Config {
   if (coverPrefer === "hardcover-first" || coverPrefer === "hardcover-only" || coverPrefer === "source") {
     c.covers.prefer = coverPrefer;
   }
+
+  c.audio.trackTimeoutMs = envInt("AUDIO_TRACK_TIMEOUT_MS") ?? c.audio.trackTimeoutMs;
+  c.audio.trackConcurrency = envInt("AUDIO_TRACK_CONCURRENCY") ?? c.audio.trackConcurrency;
 
   // Normalise the base URL once so URL joining is predictable everywhere else.
   c.source.baseUrl = c.source.baseUrl.replace(/\/+$/, "");

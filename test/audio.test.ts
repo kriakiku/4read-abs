@@ -9,6 +9,7 @@ import {
   extractPlaylistBody,
   extractPlaylistFromHar,
   extractPlaylistUrlFromHtml,
+  mapPool,
   parseM3u,
   playlistUrlFor,
   readAudioStatus,
@@ -174,6 +175,20 @@ https://cdn.example/c.mp3
   test("trackSourcePath strips domain and query", () => {
     expect(trackSourcePath("https://reasd.org/2901/01.mp3?expires=1&md5=abc")).toBe("2901/01.mp3");
     expect(trackSourcePath("https://reasd.org/2901/02.mp3")).toBe("2901/02.mp3");
+  });
+
+  test("mapPool respects concurrency and preserves order", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const result = await mapPool([10, 20, 30, 40, 50], 2, async (value) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(30);
+      inFlight -= 1;
+      return value * 2;
+    });
+    expect(result).toEqual([20, 40, 60, 80, 100]);
+    expect(maxInFlight).toBe(2);
   });
 
   test("readAudioStatus reports downloaded vs pending from the tracks manifesto", async () => {

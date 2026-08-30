@@ -350,7 +350,9 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 (без плеєра) → `executeJs` fetch m3u. Треки з CDN (`reasd.org`) — **звичайний nginx
 hotlink** (не Cloudflare): Bun GET з `Referer: https://4read.org/`. Не через
 FlareSolverr `download:true` (другий fetch губить Referer → nginx 403 HTML ~2966 B).
-Весь аудіо-пайплайн серіалізований (`runExclusiveAudio`). Файли: `0001-origName.mp3`, …
+Паралель CDN-треків у межах однієї книги: `audio.trackConcurrency` / **`AUDIO_TRACK_CONCURRENCY`**
+(за замовчуванням **5**). Весь аудіо-пайплайн серіалізований між книгами (`runExclusiveAudio`).
+Файли: `0001-origName.mp3`, …
 Повторний sync пропускає вже скачані треки (маркер `.4read-audio-playlist`).
 
 **Для m3u потрібен FlareSolverr з `executeJs`** (compose вже ставить

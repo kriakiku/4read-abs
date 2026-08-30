@@ -587,19 +587,17 @@ async function ensureAudioFromPlaylistUnlocked(
   await mkdir(dir, { recursive: true });
   await writeTracksManifest(dir, playlistUrl, tracks);
 
-  const files: string[] = [];
-  let downloaded = 0;
-  let skipped = 0;
+  const concurrency = Math.max(1, config.audio.trackConcurrency);
+  log.info(
+    `audio: downloading up to ${concurrency} CDN track(s) in parallel for ${book.source_id} (${tracks.length} total)`,
+  );
 
-  for (let index = 0; index < tracks.length; index += 1) {
-    const track = tracks[index]!;
+  const outcomes = await mapPool(tracks, concurrency, async (track, index) => {
     const name = trackFileName(index, track);
     const path = join(dir, name);
     if (await fileLooksComplete(path, config.audio.minFileBytes)) {
-      skipped += 1;
-      files.push(path);
       log.debug(`skip existing ${name} for ${book.source_id}`);
-      continue;
+      return { kind: "skipped" as const, path };
     }
     try {
       // getBinary: Bun GET with homepage Referer (CDN is nginx hotlink, not CF).
@@ -609,14 +607,27 @@ async function ensureAudioFromPlaylistUnlocked(
       });
       if (binary.bytes.length < config.audio.minFileBytes) {
         log.warn(`track too small (${binary.bytes.length}B) for ${track.url}`);
-        continue;
+        return { kind: "failed" as const };
       }
       await writeAtomic(path, binary.bytes);
-      downloaded += 1;
-      files.push(path);
       log.debug(`downloaded ${name} for ${book.source_id}`);
+      return { kind: "downloaded" as const, path };
     } catch (error) {
       log.warn(`track download failed (${track.url}): ${String(error)}`);
+      return { kind: "failed" as const };
+    }
+  });
+
+  const files: string[] = [];
+  let downloaded = 0;
+  let skipped = 0;
+  for (const outcome of outcomes) {
+    if (outcome.kind === "downloaded") {
+      downloaded += 1;
+      files.push(outcome.path);
+    } else if (outcome.kind === "skipped") {
+      skipped += 1;
+      files.push(outcome.path);
     }
   }
 
@@ -629,4 +640,26 @@ async function ensureAudioFromPlaylistUnlocked(
   );
 
   return { playlistUrl, tracks: tracks.length, downloaded, skipped, files };
+}
+
+/** Run `fn` over items with at most `concurrency` in flight; results keep input order. */
+export async function mapPool<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Math.max(1, Math.min(concurrency, items.length || 1));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= items.length) return;
+        results[index] = await fn(items[index]!, index);
+      }
+    }),
+  );
+  return results;
 }

@@ -85,6 +85,8 @@ audio:
   playlistTimeoutMs: 30000
   # Per mp3 on reasd.org (nginx hotlink + Referer). Chapters are large; 45s page timeout is too short.
   trackTimeoutMs: 600000
+  # Parallel CDN mp3 downloads within one book (ENV: AUDIO_TRACK_CONCURRENCY).
+  trackConcurrency: 5
   minFileBytes: 1024
 
 sync:

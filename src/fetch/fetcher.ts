@@ -631,8 +631,8 @@ export class Fetcher {
    */
   private async downloadMediaDirect(url: string, referer?: string): Promise<BinaryResult> {
     const ref = referer?.trim() || this.homeUrl();
-    // CDN traffic must not wait out 4read.org Cloudflare cooldowns.
-    await this.limiter.acquire({ ignoreCooldown: true });
+    // CDN (reasd.org) is unrelated to 4read Cloudflare pacing — do not acquire the source limiter
+    // (that would serialise parallel track downloads behind minIntervalMs).
 
     const started = Bun.nanoseconds();
     const headers = this.browserHeaders({ referer: ref, purpose: "playlist" });
@@ -674,7 +674,6 @@ export class Fetcher {
         throw new Error(`CDN hotlink rejected (HTTP ${response.status}) for ${url}`);
       }
 
-      this.limiter.recordSuccess();
       this.record(url, "direct", response.status, true, false, ms);
       log.info(`CDN track via direct GET (${bytes.length} bytes) ${url}`);
       return { url, status: response.status, bytes, contentType };
@@ -682,7 +681,6 @@ export class Fetcher {
       if (error instanceof CooldownError) throw error;
       if (error instanceof Error && error.message.startsWith("CDN hotlink")) throw error;
       const ms = (Bun.nanoseconds() - started) / 1e6;
-      this.limiter.recordFailure();
       this.record(url, "direct", null, false, false, ms, String(error));
       throw error;
     }

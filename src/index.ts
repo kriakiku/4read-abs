@@ -34,6 +34,8 @@ Environment:
   OPENAI_MODEL             Default mimo-v2.5 (recommended on OpenCode Go)
   FLARESOLVERR_URL         FlareSolverr endpoint, e.g. http://127.0.0.1:8191/v1
   FLARESOLVERR_MODE        auto (default) | always | never
+  AUDIO_TRACK_CONCURRENCY  Parallel CDN mp3 downloads per book (default: 5)
+  AUDIO_TRACK_TIMEOUT_MS   Per-track CDN download timeout (default: 600000)
   HOST, PORT               Web UI bind address (default: 127.0.0.1:8480)
   LOG_LEVEL                debug | info | warn | error
 `;

@@ -130,7 +130,13 @@ describe("configuration", () => {
     const config = parseConfigTextWithEnv("");
     expect(config.audio.playlistTimeoutMs).toBe(30_000);
     expect(config.audio.trackTimeoutMs).toBe(600_000);
+    expect(config.audio.trackConcurrency).toBe(5);
     expect(config.source.baseUrl).toBe("https://4read.org");
+  });
+
+  test("AUDIO_TRACK_CONCURRENCY overrides yaml", () => {
+    setEnv({ AUDIO_TRACK_CONCURRENCY: "8" });
+    expect(parseConfigTextWithEnv("").audio.trackConcurrency).toBe(8);
   });
 
   test("saving validates first and leaves a broken file unwritten", async () => {
