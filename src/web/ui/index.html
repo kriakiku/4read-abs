@@ -162,6 +162,20 @@
       .item .title { font-weight: 600; }
       .item .meta { color: var(--muted); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
       .item .desc { color: var(--muted); font-size: 13px; max-height: 3.2em; overflow: hidden; }
+      .audio-files {
+        margin: 6px 0 0;
+        padding: 0;
+        list-style: none;
+        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: var(--muted);
+        max-height: 9.5em;
+        overflow: auto;
+      }
+      .audio-files li { display: flex; gap: 8px; align-items: baseline; }
+      .audio-files .mark { flex: 0 0 auto; width: 1.1em; }
+      .audio-files .audio-ok { color: var(--ok); }
+      .audio-files .audio-pending { color: var(--muted); }
+      .audio-summary { color: var(--muted); font-size: 12px; margin-top: 4px; }
       .empty { color: var(--muted); font-style: italic; }
       pre.logs {
         margin: 0;
@@ -447,6 +461,29 @@
             description.textContent = book.description;
             middle.append(description);
           }
+
+          if (entry.audio?.files?.length) {
+            const summary = document.createElement("div");
+            summary.className = "audio-summary";
+            summary.textContent = `Audio: ${entry.audio.downloaded}/${entry.audio.total}${entry.audio.complete ? " (complete)" : ""}`;
+            middle.append(summary);
+            const ul = document.createElement("ul");
+            ul.className = "audio-files";
+            for (const file of entry.audio.files) {
+              const li = document.createElement("li");
+              li.className = file.status === "downloaded" ? "audio-ok" : "audio-pending";
+              const mark = document.createElement("span");
+              mark.className = "mark";
+              mark.textContent = file.status === "downloaded" ? "✓" : "·";
+              const label = document.createElement("span");
+              label.textContent = file.name;
+              label.title = file.file;
+              li.append(mark, label);
+              ul.append(li);
+            }
+            middle.append(ul);
+          }
+
           grid.append(middle);
 
           const actions = document.createElement("div");

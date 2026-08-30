@@ -6,7 +6,7 @@ import { booksForSubscription, getBook, type BookWithPeople } from "../catalog/s
 import { coverProxyUrl } from "../covers.ts";
 import { getLinkBySource, removeLinkBySource } from "../abs/matcher.ts";
 import { stagingDirFor } from "../abs/stage.ts";
-import { clearBookFolder } from "../audio/m3u.ts";
+import { clearBookFolder, readAudioStatus, type AudioStatus } from "../audio/m3u.ts";
 import { crawlFacet } from "./crawl.ts";
 
 const log = logger("subs");
@@ -26,6 +26,8 @@ export interface QueueEntry extends QueueRow {
   linkedItemId: string | null;
   /** Local cover URL with a version query so browsers do not keep a stale image. */
   coverUrl: string | null;
+  /** Expected / downloaded audio tracks in staging (path without domain/query). */
+  audio: AudioStatus | null;
 }
 
 export interface RefreshResult {
@@ -149,11 +151,15 @@ export async function listQueue(ctx: AppContext, state?: string, limit = 200): P
     rows.map(async (row) => {
       const book = getBook(ctx.db, row.source_id);
       const link = getLinkBySource(ctx.db, row.source_id);
+      const audio = book
+        ? await readAudioStatus(stagingDirFor(book, ctx.config), ctx.config.audio.minFileBytes)
+        : null;
       return {
         ...row,
         book,
         linkedItemId: link?.abs_item_id ?? null,
         coverUrl: book ? await coverProxyUrl(book, ctx.config) : null,
+        audio: audio && audio.total > 0 ? audio : null,
       };
     }),
   );

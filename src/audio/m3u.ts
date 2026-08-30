@@ -10,9 +10,8 @@ import { logger } from "../log.ts";
 const log = logger("audio");
 
 const PLAYLIST_MARKER = ".4read-audio-playlist";
-
-/** Playlist path segment: `{id}-{slug}` matching the article basename without `.html`. */
-const PLAYLIST_KEY_RE = /^\d+-[a-zA-Z0-9][\w.-]{0,180}$/;
+/** Expected track list for UI + partial resume (written as soon as the m3u is parsed). */
+const TRACKS_MANIFEST = ".4read-audio-tracks.json";
 
 export interface PlaylistTrack {
   url: string;
@@ -25,6 +24,114 @@ export interface AudioFetchResult {
   downloaded: number;
   skipped: number;
   files: string[];
+}
+
+export type AudioTrackStatus = "downloaded" | "pending";
+
+/** One expected track for the queue UI / resume logic. */
+export interface AudioTrackInfo {
+  /** Source path without domain or query, e.g. `2901/01.mp3`. */
+  name: string;
+  /** Local staging filename, e.g. `0001-01.mp3`. */
+  file: string;
+  status: AudioTrackStatus;
+}
+
+export interface AudioStatus {
+  files: AudioTrackInfo[];
+  downloaded: number;
+  total: number;
+  complete: boolean;
+}
+
+interface TracksManifest {
+  playlistUrl: string;
+  tracks: Array<{ file: string; name: string }>;
+}
+
+/** Playlist path segment: `{id}-{slug}` matching the article basename without `.html`. */
+const PLAYLIST_KEY_RE = /^\d+-[a-zA-Z0-9][\w.-]{0,180}$/;
+
+/**
+ * Source path for display / resume identity: no domain, no query/hash.
+ * `https://reasd.org/2901/01.mp3?expires=1&md5=x` → `2901/01.mp3`
+ */
+export function trackSourcePath(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return decodeURIComponent(parsed.pathname).replace(/^\/+/, "");
+  } catch {
+    const noQuery = url.split(/[?#]/)[0] ?? url;
+    return noQuery.replace(/^https?:\/\/[^/]+\//i, "").replace(/^\/+/, "");
+  }
+}
+
+async function writeTracksManifest(
+  dir: string,
+  playlistUrl: string,
+  tracks: PlaylistTrack[],
+): Promise<void> {
+  const payload: TracksManifest = {
+    playlistUrl,
+    tracks: tracks.map((track, index) => ({
+      file: trackFileName(index, track),
+      name: trackSourcePath(track.url),
+    })),
+  };
+  await writeFile(join(dir, TRACKS_MANIFEST), `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+async function readTracksManifest(dir: string): Promise<TracksManifest | null> {
+  try {
+    const raw = await readFile(join(dir, TRACKS_MANIFEST), "utf8");
+    const parsed = JSON.parse(raw) as TracksManifest;
+    if (!parsed || !Array.isArray(parsed.tracks)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Status of expected / present audio files in a staging folder (for the queue UI). */
+export async function readAudioStatus(dir: string, minFileBytes: number): Promise<AudioStatus> {
+  const manifest = await readTracksManifest(dir);
+  if (manifest?.tracks.length) {
+    const files: AudioTrackInfo[] = [];
+    for (const track of manifest.tracks) {
+      const done = await fileLooksComplete(join(dir, track.file), minFileBytes);
+      files.push({
+        name: track.name || track.file,
+        file: track.file,
+        status: done ? "downloaded" : "pending",
+      });
+    }
+    const downloaded = files.filter((f) => f.status === "downloaded").length;
+    return {
+      files,
+      downloaded,
+      total: files.length,
+      complete: downloaded === files.length && files.length > 0,
+    };
+  }
+
+  // Legacy folder: no manifest yet — list whatever media is on disk as downloaded.
+  const files: AudioTrackInfo[] = [];
+  try {
+    for (const name of await readdir(dir)) {
+      if (!isMediaFile(name)) continue;
+      if (!(await fileLooksComplete(join(dir, name), minFileBytes))) continue;
+      files.push({ name, file: name, status: "downloaded" });
+    }
+  } catch {
+    // Missing dir.
+  }
+  files.sort((a, b) => a.file.localeCompare(b.file));
+  return {
+    files,
+    downloaded: files.length,
+    total: files.length,
+    complete: files.length > 0,
+  };
 }
 
 /**
@@ -227,6 +334,11 @@ export async function clearDownloadedAudio(dir: string): Promise<number> {
     // ignore
   }
   try {
+    await rm(join(dir, TRACKS_MANIFEST), { force: true });
+  } catch {
+    // ignore
+  }
+  try {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (!entry.isFile() || !isMediaFile(entry.name)) continue;
       await rm(join(dir, entry.name), { force: true });
@@ -373,24 +485,31 @@ export async function ensureAudioFromPlaylist(
 
   const markerPath = join(dir, PLAYLIST_MARKER);
   const markerCandidate = constructedUrl;
-  if (markerCandidate) {
-    try {
-      const marker = (await readFile(markerPath, "utf8")).trim();
-      if (marker === markerCandidate) {
-        const existing = (await readdir(dir)).filter((name) => /\.(mp3|m4a|m4b|flac|ogg|opus)$/i.test(name));
-        if (existing.length > 0) {
-          log.debug(`audio already present for ${book.source_id} (${existing.length} files)`);
-          return {
-            playlistUrl: markerCandidate,
-            tracks: existing.length,
-            downloaded: 0,
-            skipped: existing.length,
-            files: existing.map((name) => join(dir, name)),
-          };
-        }
+
+  // Resume: if every expected track from a prior manifest is already on disk, skip network.
+  // Partial folders must NOT early-return — missing tracks still need a fresh m3u + download.
+  {
+    const prior = await readAudioStatus(dir, config.audio.minFileBytes);
+    if (prior.complete && prior.total > 0) {
+      let markerOk = false;
+      try {
+        const marker = (await readFile(markerPath, "utf8")).trim();
+        markerOk = Boolean(markerCandidate && marker === markerCandidate);
+      } catch {
+        markerOk = prior.complete;
       }
-    } catch {
-      // No marker yet.
+      if (markerOk || !markerCandidate) {
+        log.debug(
+          `audio already complete for ${book.source_id} (${prior.downloaded}/${prior.total} files)`,
+        );
+        return {
+          playlistUrl: markerCandidate ?? prior.files[0]?.file ?? "",
+          tracks: prior.total,
+          downloaded: 0,
+          skipped: prior.downloaded,
+          files: prior.files.map((f) => join(dir, f.file)),
+        };
+      }
     }
   }
 
@@ -519,6 +638,8 @@ export async function ensureAudioFromPlaylist(
   }
 
   await mkdir(dir, { recursive: true });
+  await writeTracksManifest(dir, playlistUrl, tracks);
+
   const files: string[] = [];
   let downloaded = 0;
   let skipped = 0;
@@ -530,6 +651,7 @@ export async function ensureAudioFromPlaylist(
     if (await fileLooksComplete(path, config.audio.minFileBytes)) {
       skipped += 1;
       files.push(path);
+      log.debug(`skip existing ${name} for ${book.source_id}`);
       continue;
     }
     try {
@@ -551,7 +673,9 @@ export async function ensureAudioFromPlaylist(
     }
   }
 
-  if (files.length > 0) {
+  // Only mark the playlist complete when every expected track is on disk — partial runs
+  // must resume missing files on the next sync/accept.
+  if (files.length === tracks.length && playlistUrl) {
     await writeFile(markerPath, playlistUrl);
   }
 

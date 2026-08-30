@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configSchema } from "../src/config.ts";
@@ -11,7 +11,9 @@ import {
   extractPlaylistUrlFromHtml,
   parseM3u,
   playlistUrlFor,
+  readAudioStatus,
   trackFileName,
+  trackSourcePath,
 } from "../src/audio/m3u.ts";
 import type { BookWithPeople } from "../src/catalog/store.ts";
 import { Fetcher, playlistFetchExecuteJs } from "../src/fetch/fetcher.ts";
@@ -164,6 +166,37 @@ https://cdn.example/c.mp3
     expect(trackFileName(0, { url: "https://cdn.example/", title: null })).toBe("0001-track-0001.mp3");
   });
 
+  test("trackSourcePath strips domain and query", () => {
+    expect(trackSourcePath("https://reasd.org/2901/01.mp3?expires=1&md5=abc")).toBe("2901/01.mp3");
+    expect(trackSourcePath("https://reasd.org/2901/02.mp3")).toBe("2901/02.mp3");
+  });
+
+  test("readAudioStatus reports downloaded vs pending from the tracks manifesto", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-status-"));
+    tempDirs.push(dir);
+    await writeFile(
+      join(dir, ".4read-audio-tracks.json"),
+      JSON.stringify({
+        playlistUrl: "https://4read.org/m33u2/1-x.m3u",
+        tracks: [
+          { file: "0001-01.mp3", name: "2901/01.mp3" },
+          { file: "0002-02.mp3", name: "2901/02.mp3" },
+        ],
+      }),
+    );
+    await writeFile(join(dir, "0001-01.mp3"), Uint8Array.from({ length: 2048 }, (_, i) => i));
+    const status = await readAudioStatus(dir, 64);
+    expect(status.total).toBe(2);
+    expect(status.downloaded).toBe(1);
+    expect(status.complete).toBe(false);
+    expect(status.files[0]).toEqual({
+      name: "2901/01.mp3",
+      file: "0001-01.mp3",
+      status: "downloaded",
+    });
+    expect(status.files[1]?.status).toBe("pending");
+  });
+
   test("extractPlaylistUrlFromHtml reads Playerjs file=", () => {
     const html = `<script>var playerjs1 = new Playerjs({id:"playerjs1",file:"https://4read.org/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u"});</script>`;
     expect(extractPlaylistUrlFromHtml(html)).toBe(
@@ -282,6 +315,75 @@ describe("playlist audio fetch", () => {
     const again = await ensureAudioFromPlaylist(book(), target, config, fetcher);
     expect(again?.downloaded).toBe(0);
     expect(again?.skipped).toBe(2);
+
+    const status = await readAudioStatus(target, 64);
+    expect(status.complete).toBe(true);
+    expect(status.files.map((f) => f.name)).toEqual(["folder/a.mp3", "b.mp3"]);
+  });
+
+  test("partial download resumes missing tracks and skips existing files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-partial-"));
+    tempDirs.push(dir);
+    const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => i % 256);
+    let mp3Hits = 0;
+
+    const origin = Bun.serve({
+      port: 0,
+      fetch(request): Response {
+        const { pathname } = new URL(request.url);
+        if (pathname.endsWith(".html")) {
+          return new Response("page", { headers: { "content-type": "text/html" } });
+        }
+        if (pathname.endsWith(".m3u")) {
+          const base = `http://127.0.0.1:${origin.port}`;
+          return new Response(`#EXTM3U\n${base}/a.mp3\n${base}/b.mp3\n${base}/c.mp3\n`, {
+            headers: { "content-type": "audio/x-mpegurl" },
+          });
+        }
+        if (pathname.endsWith(".mp3")) {
+          mp3Hits += 1;
+          // Fail the middle track on the first pass.
+          if (pathname.endsWith("/b.mp3") && mp3Hits <= 2) {
+            return new Response("nope", { status: 500 });
+          }
+          return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
+        }
+        return new Response("no", { status: 404 });
+      },
+    });
+    servers.push(origin);
+
+    const { fetcher } = await makeFetcher();
+    const config = configSchema.parse({
+      source: { baseUrl: `http://127.0.0.1:${origin.port}`, minIntervalMs: 0 },
+    });
+    const target = join(dir, "book");
+
+    const first = await ensureAudioFromPlaylist(book(), target, config, fetcher);
+    expect(first?.downloaded).toBe(2);
+    expect((await readdir(target)).filter((n) => n.endsWith(".mp3")).sort()).toEqual([
+      "0001-a.mp3",
+      "0003-c.mp3",
+    ]);
+    // Partial must not write the complete playlist marker.
+    await expect(readFile(join(target, ".4read-audio-playlist"), "utf8")).rejects.toThrow();
+
+    const status = await readAudioStatus(target, 64);
+    expect(status.downloaded).toBe(2);
+    expect(status.total).toBe(3);
+    expect(status.complete).toBe(false);
+
+    const hitsBeforeResume = mp3Hits;
+    const second = await ensureAudioFromPlaylist(book(), target, config, fetcher);
+    expect(second?.skipped).toBe(2);
+    expect(second?.downloaded).toBe(1);
+    expect(mp3Hits).toBe(hitsBeforeResume + 1);
+    expect((await readdir(target)).filter((n) => n.endsWith(".mp3")).sort()).toEqual([
+      "0001-a.mp3",
+      "0002-b.mp3",
+      "0003-c.mp3",
+    ]);
+    expect(await readFile(join(target, ".4read-audio-playlist"), "utf8")).toContain("/m33u2/");
   });
 
   test("playlist warms the book HTML then sends its cookies, Accept, Referer, same UA", async () => {
