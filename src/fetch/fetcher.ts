@@ -15,6 +15,8 @@ export interface TextResult {
   body: string;
   strategy: Strategy;
   har?: unknown;
+  /** m3u body from in-page `executeJs` fetch during book warm-up. */
+  playlistBody?: string;
 }
 
 export interface BinaryResult {
@@ -157,15 +159,22 @@ export class Fetcher {
   }
 
   /**
-   * Hit the article HTML in Chrome so cookies settle and the player can request its m3u.
-   * When FlareSolverr is configured, waits briefly and asks for a HAR when the build supports it.
+   * Hit the article HTML in Chrome so cookies settle. Optionally run `executeJs` to
+   * `fetch()` the playlist URL in-page (same TLS + cookies as the solved challenge) —
+   * this is how stock-incompatible m3u works on flaresolverr-go / executeJs builds.
    */
-  async warmBookPage(pageUrl: string): Promise<TextResult | null> {
+  async warmBookPage(
+    pageUrl: string,
+    options: { fetchPlaylistUrl?: string | null } = {},
+  ): Promise<TextResult | null> {
     try {
       return await this.getText(pageUrl, {
         chrome: true,
-        waitInSeconds: this.flareConfigured ? 3 : undefined,
+        waitInSeconds: this.flareConfigured ? 2 : undefined,
         recordHar: this.flareConfigured,
+        executeJs: options.fetchPlaylistUrl
+          ? playlistFetchExecuteJs(options.fetchPlaylistUrl)
+          : undefined,
       });
     } catch (error) {
       log.debug(`book page warm-up failed for ${pageUrl}: ${String(error)}`);
@@ -191,6 +200,7 @@ export class Fetcher {
       chrome?: boolean;
       waitInSeconds?: number;
       recordHar?: boolean;
+      executeJs?: string;
     } = {},
   ): Promise<TextResult> {
     // Cooldown only blocks hammering the origin directly. FlareSolverr is a different client
@@ -267,6 +277,7 @@ export class Fetcher {
         headers: flareHeadersFrom(headers),
         waitInSeconds: options.waitInSeconds,
         recordHar: options.recordHar,
+        executeJs: options.executeJs,
       });
       const ms = (Bun.nanoseconds() - started) / 1e6;
       this.jar.setUserAgent(result.userAgent);
@@ -282,12 +293,17 @@ export class Fetcher {
       if (result.status >= 400) {
         throw new Error(`HTTP ${result.status} for ${url} (via FlareSolverr)`);
       }
+      const playlistBody = playlistBodyFromExecuteJs(result.executeJsResult);
+      if (playlistBody) {
+        log.info(`playlist via executeJs (${playlistBody.length} bytes) during page load`);
+      }
       return {
         url,
         status: result.status,
         body: result.body,
         strategy: "flaresolverr",
         har: result.har,
+        playlistBody: playlistBody ?? undefined,
       };
     } catch (error) {
       const ms = (Bun.nanoseconds() - started) / 1e6;
@@ -525,4 +541,27 @@ function flareHeadersFrom(headers: Record<string, string>): Record<string, strin
     out[key] = value;
   }
   return out;
+}
+
+/** In-page fetch of the m3u while still on the book origin (CF already cleared). */
+export function playlistFetchExecuteJs(playlistUrl: string): string {
+  return `return fetch(${JSON.stringify(playlistUrl)},{credentials:"include",headers:{"Accept":"*/*"}}).then(function(r){return r.text();})`;
+}
+
+function playlistBodyFromExecuteJs(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (looksLikeHtmlPlaylistMiss(trimmed)) return null;
+  if (trimmed.startsWith("#EXTM3U") || /^https?:\/\//i.test(trimmed)) return trimmed;
+  // Some bridges JSON-stringify the result.
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      const unquoted = JSON.parse(trimmed) as string;
+      if (typeof unquoted === "string" && !looksLikeHtmlPlaylistMiss(unquoted)) return unquoted;
+    } catch {
+      // keep raw
+    }
+  }
+  return trimmed;
 }

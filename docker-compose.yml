@@ -33,12 +33,14 @@ services:
       - /srv/audiobooks:/library
 
   flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    # Stock FlareSolverr v2 cannot return .m3u / binary bodies (download removed).
+    # flaresolverr-go supports download:true and executeJs (in-page fetch of the playlist).
+    image: rorqualx/flaresolverr-go:latest
     restart: unless-stopped
     environment:
       LOG_LEVEL: warning
       TZ: Europe/Kyiv
-      # Must stay false: cover downloads open the image URL inside this browser.
+      # Must stay false: cover/audio downloads open URLs inside this browser.
       DISABLE_MEDIA: "false"
     # Only 4read-abs needs to reach it, so no host port is published.
     expose:

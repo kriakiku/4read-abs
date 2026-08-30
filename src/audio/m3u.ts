@@ -398,12 +398,23 @@ export async function ensureAudioFromPlaylist(
 
   let playlistUrl = constructedUrl;
   let body: string | null = null;
-  /** How we chose the m3u URL / body: har | playerjs | constructed */
-  let discovery: "har" | "playerjs" | "constructed" | null = constructedUrl ? "constructed" : null;
+  /** How we chose the m3u URL / body: executejs | har | playerjs | constructed */
+  let discovery: "executejs" | "har" | "playerjs" | "constructed" | null = constructedUrl
+    ? "constructed"
+    : null;
 
   try {
-    const page = await fetcher.warmBookPage(referer);
-    if (page?.har) {
+    const page = await fetcher.warmBookPage(referer, { fetchPlaylistUrl: constructedUrl });
+    if (page?.playlistBody) {
+      body = extractPlaylistBody(page.playlistBody);
+      if (body) {
+        discovery = "executejs";
+        log.info(
+          `audio: m3u source=executejs (in-page fetch while loading book HTML) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+        );
+      }
+    }
+    if (!body && page?.har) {
       const fromHar = extractPlaylistFromHar(page.har);
       if (fromHar) {
         playlistUrl = fromHar.url;
@@ -417,9 +428,9 @@ export async function ensureAudioFromPlaylist(
           `audio: HAR present but no /m33u2/*.m3u entry for ${book.source_id} page=${referer}`,
         );
       }
-    } else {
+    } else if (!body) {
       log.info(
-        `audio: no HAR from FlareSolverr for ${book.source_id}; trying Playerjs HTML then constructed URL page=${referer}`,
+        `audio: no executeJs/HAR playlist for ${book.source_id}; trying Playerjs HTML then constructed URL page=${referer}`,
       );
     }
     if (!body && page?.body) {

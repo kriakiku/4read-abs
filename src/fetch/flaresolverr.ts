@@ -26,9 +26,13 @@ interface FlareSolution {
   userAgent?: string;
   headers?: Record<string, string>;
   response?: string;
+  /** flaresolverr-go: set to `"base64"` when `download: true` put file bytes in `response`. */
+  responseEncoding?: string;
   screenshot?: string;
   download?: FlareDownload | FlareDownload[];
   har?: unknown;
+  /** Present when the FlareSolverr build supports `executeJs`. */
+  executeJsResult?: string;
 }
 
 interface FlareResponse {
@@ -45,6 +49,8 @@ export interface FlareResult {
   userAgent?: string;
   /** Present when the FlareSolverr build supports `recordHar: true`. */
   har?: unknown;
+  /** Result of `executeJs` (e.g. in-page `fetch` of the m3u). */
+  executeJsResult?: string;
 }
 
 export interface FlareFileResult {
@@ -152,6 +158,11 @@ export class FlareSolverrClient {
       waitInSeconds?: number;
       /** Ask Chrome to record a HAR (supported on some FlareSolverr builds). */
       recordHar?: boolean;
+      /**
+       * JS to run in the solved page (flaresolverr-go / FlareSolverr executeJs builds).
+       * Result lands in `executeJsResult`. Stock FlareSolverr ignores the field.
+       */
+      executeJs?: string;
     } = {},
   ): Promise<FlareResult> {
     log.info(`Chrome GET ${url}`);
@@ -173,15 +184,20 @@ export class FlareSolverrClient {
     if (options.recordHar) {
       extra.recordHar = true;
     }
+    if (options.executeJs) {
+      extra.executeJs = options.executeJs;
+    }
     const result = await this.requestGet(url, extra);
     if (result.status !== "ok" || !result.solution) {
       throw new Error(`FlareSolverr error: ${result.message ?? "no solution"}`);
     }
 
     const solution = result.solution;
+    const jsResult = solution.executeJsResult;
     log.info(
       `Chrome GET done in ${Math.round((Date.now() - started) / 1000)}s → HTTP ${solution.status ?? 0} (${(solution.response ?? "").length} bytes)` +
-        (solution.har ? ", har captured" : ""),
+        (solution.har ? ", har captured" : "") +
+        (jsResult !== undefined ? `, executeJs=${jsResult.length} chars` : ""),
     );
     return {
       status: solution.status ?? 0,
@@ -193,13 +209,15 @@ export class FlareSolverrClient {
       })),
       userAgent: solution.userAgent,
       har: solution.har,
+      executeJsResult: jsResult,
     };
   }
 
   /**
-   * Fetch a file inside FlareSolverr's browser via patched `download: true` (base64 bytes).
-   * Stock FlareSolverr v2 removed this flag — after the first miss we skip further attempts.
-   * Navigating to `.m3u` via plain `request.get` leaves the previous HTML in `solution.response`.
+   * Fetch a file inside FlareSolverr's browser via `download: true`.
+   * - flaresolverr-go: base64 in `solution.response` + `responseEncoding: "base64"`
+   * - some forks: `solution.download.{data,mime}`
+   * - stock FlareSolverr v2: flag ignored → previous HTML in response; we disable further tries
    */
   async fetchDownload(
     url: string,
@@ -228,23 +246,19 @@ export class FlareSolverrClient {
       log.info(`Chrome DOWNLOAD ${url}`);
       const started = Date.now();
       const downloaded = await this.requestGet(url, extra);
-      const file = normaliseDownload(downloaded.solution?.download);
-      if (downloaded.status === "ok" && file) {
-        const bytes = decodeBase64(file.data);
-        const size = bytes?.length ?? 0;
-        log.info(
-          `Chrome DOWNLOAD done in ${Math.round((Date.now() - started) / 1000)}s → ${size} bytes` +
-            (file.mime ? ` (${file.mime})` : ""),
-        );
-        if (bytes && bytes.length >= minBytes && !looksLikeHtml(bytes)) {
+      const bytes = extractDownloadBytes(downloaded.solution);
+      const size = bytes?.length ?? 0;
+      if (downloaded.status === "ok" && bytes) {
+        log.info(`Chrome DOWNLOAD done in ${Math.round((Date.now() - started) / 1000)}s → ${size} bytes`);
+        if (bytes.length >= minBytes && !looksLikeHtml(bytes)) {
           this.downloadSupported = true;
           return {
             bytes,
-            contentType: file.mime || sniffContentType(bytes) || "application/octet-stream",
+            contentType: sniffContentType(bytes) || "application/octet-stream",
             strategy: "download",
           };
         }
-        if (bytes && looksLikeHtml(bytes)) {
+        if (looksLikeHtml(bytes)) {
           log.warn(`Chrome DOWNLOAD for ${url} returned HTML (${size} bytes), not a file`);
         }
       } else {
@@ -252,11 +266,10 @@ export class FlareSolverrClient {
           `Chrome DOWNLOAD unavailable for ${url}: ${downloaded.message ?? "no download payload"}`,
         );
       }
-      // No download payload → stock FlareSolverr (v2 removed the flag).
       if (this.downloadSupported === null) {
         this.downloadSupported = false;
         log.warn(
-          "FlareSolverr download:true returned no file payload — disabling download mode (stock FlareSolverr v2?). Use a build with download support, or m3u will be fetched directly after page warm-up.",
+          "FlareSolverr download:true returned no file payload — disabling download mode (stock FlareSolverr v2?). Prefer flaresolverr-go (see docker-compose) or a build with executeJs/download.",
         );
       }
     } catch (error) {
@@ -296,6 +309,20 @@ export class FlareSolverrClient {
       log.debug(`session destroy failed: ${String(error)}`);
     }
   }
+}
+
+function extractDownloadBytes(solution: FlareSolution | undefined): Uint8Array | null {
+  if (!solution) return null;
+  const nested = normaliseDownload(solution.download);
+  if (nested) {
+    const bytes = decodeBase64(nested.data);
+    if (bytes) return bytes;
+  }
+  // flaresolverr-go: download:true → response is base64, responseEncoding: "base64"
+  if (solution.responseEncoding === "base64" && solution.response) {
+    return decodeBase64(solution.response);
+  }
+  return null;
 }
 
 function normaliseDownload(

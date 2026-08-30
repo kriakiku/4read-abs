@@ -48,10 +48,13 @@
 Увесь сайт за Cloudflare managed challenge. Звичайний HTTP-клієнт отримує `403` на
 будь-який шлях, включно з `robots.txt`. Без обходу інструмент нічого не зробить.
 
-Вкажіть `FLARESOLVERR_URL` на інстанс [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr):
-він проходить challenge у браузері, а `cf_clearance` перевикористовується для звичайних
-запитів. Обкладинки завжди йдуть прямим запитом (FlareSolverr повертає лише HTML); якщо
-їх блокує, clearance оновлюється через FlareSolverr і завантаження повторюється.
+Вкажіть `FLARESOLVERR_URL` на інстанс з підтримкою **`download:true`** і/або **`executeJs`**
+(рекомендовано [flaresolverr-go](https://github.com/Rorqualx/flaresolverr-go) — саме його тягне
+`docker-compose.yml`). Stock [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) v2
+проходить challenge для HTML, але **не вміє віддати тіло `.m3u`** (navigate лишає HTML
+попередньої сторінки, `download` випиляний) — без цього аудіо з `/m33u2/` не скачається.
+Bun також не може перевикористати `cf_clearance` (інший TLS-fingerprint): прямий GET
+плейлиста ловить `403`.
 
 Режими `FLARESOLVERR_MODE`:
 
@@ -343,11 +346,15 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Аудіо з плейлистів 4read
 
-Після **Accept** Chrome відкриває HTML сторінки книги (коротка пауза + HAR, якщо
-FlareSolverr підтримує). Тіло `/m33u2/….m3u` береться з мережевих запитів сторінки,
-або URL читається з `Playerjs({file:…})` і m3u вантажиться окремим Chrome GET.
+Після **Accept** Chrome відкриває HTML книги і (на flaresolverr-go) через `executeJs`
+робить in-page `fetch` плейлиста — той самий TLS/cookies, що вже пройшли Cloudflare.
+Далі: HAR → URL з `Playerjs({file:…})` → прямий GET / `download:true`.
 Треки — Fetcher (прямий → Chrome download). Файли: `0001-origName.mp3`, …
 Повторний sync пропускає вже скачані треки (маркер `.4read-audio-playlist`).
+
+**Потрібен FlareSolverr з `download`/`executeJs`** (compose вже ставить
+`rorqualx/flaresolverr-go`). Stock `ghcr.io/flaresolverr/flaresolverr` для m3u
+недостатній.
 
 ```
 GET {source.baseUrl}/m33u2/{id}-{slug}.m3u
