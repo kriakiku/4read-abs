@@ -341,6 +341,111 @@ describe("playlist audio fetch", () => {
     expect(m3uCookies[0]).toContain("viewed_ids=6840");
   });
 
+  test("playlist loads via FlareSolverr Chrome, not Bun fetch", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "4read-audio-chrome-m3u-"));
+    tempDirs.push(dir);
+    const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => (i + 7) % 256);
+    const flareRequests: Array<Record<string, unknown>> = [];
+    const originHits: string[] = [];
+
+    const origin = Bun.serve({
+      port: 0,
+      fetch(request): Response {
+        originHits.push(new URL(request.url).pathname);
+        return new Response("should-not-hit-origin-for-m3u", { status: 500 });
+      },
+    });
+    servers.push(origin);
+
+    const flare = Bun.serve({
+      port: 0,
+      async fetch(request): Promise<Response> {
+        const payload = (await request.json()) as Record<string, unknown>;
+        flareRequests.push(payload);
+        if (payload.cmd === "sessions.create") {
+          return Response.json({ status: "ok", session: "s1" });
+        }
+        const target = String(payload.url ?? "");
+        if (payload.download && target.includes(".mp3")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              download: {
+                filename: "a.mp3",
+                mime: "audio/mpeg",
+                data: Buffer.from(mp3).toString("base64"),
+              },
+            },
+          });
+        }
+        if (target.includes(".m3u")) {
+          const base = `http://127.0.0.1:${origin.port}`;
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+              cookies: [{ name: "PHPSESSID", value: "from-m3u", expires: -1 }],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+            },
+          });
+        }
+        if (target.includes(".html")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: "<html><body>book</body></html>",
+              cookies: [
+                { name: "PHPSESSID", value: "from-html", expires: -1 },
+                { name: "viewed_ids", value: "6840", expires: -1 },
+              ],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+            },
+          });
+        }
+        return Response.json({ status: "error", message: `unexpected ${target}` });
+      },
+    });
+    servers.push(flare);
+
+    const dbDir = await mkdtemp(join(tmpdir(), "4read-audio-chrome-m3u-db-"));
+    tempDirs.push(dbDir);
+    const db = openDb(dbDir);
+    const config = configSchema.parse({
+      paths: { data: dbDir },
+      source: {
+        baseUrl: `http://127.0.0.1:${origin.port}`,
+        minIntervalMs: 0,
+        challengeCooldownMs: 50,
+        requestTimeoutMs: 5_000,
+      },
+      flaresolverr: { url: `http://127.0.0.1:${flare.port}/`, mode: "auto", maxTimeoutMs: 5_000 },
+    });
+    const fetcher = new Fetcher(db, config);
+    fetchers.push(fetcher);
+
+    const target = join(dir, "book");
+    const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
+    expect(result?.downloaded).toBe(1);
+    expect(await readdir(target)).toContain("0001-a.mp3");
+
+    const chromeUrls = flareRequests
+      .filter((r) => r.cmd === "request.get")
+      .map((r) => String(r.url ?? ""));
+    expect(chromeUrls.some((u) => u.includes(".html"))).toBe(true);
+    expect(chromeUrls.some((u) => u.includes(".m3u"))).toBe(true);
+    // m3u must not be fetched by Bun against the origin
+    expect(originHits.some((p) => p.endsWith(".m3u"))).toBe(false);
+    expect(fetcher.jar.phpSessionId()).toBeTruthy();
+  });
+
   test("falls back to FlareSolverr Chrome download for challenged media", async () => {
     const dir = await mkdtemp(join(tmpdir(), "4read-audio-flare-"));
     tempDirs.push(dir);
@@ -396,6 +501,18 @@ describe("playlist audio fetch", () => {
             },
           });
         }
+        if (target.includes(".html")) {
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: "<html><body>book</body></html>",
+              cookies: [{ name: "PHPSESSID", value: "warm", expires: -1 }],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+            },
+          });
+        }
         return Response.json({ status: "error", message: "unexpected" });
       },
     });
@@ -423,5 +540,6 @@ describe("playlist audio fetch", () => {
     expect(await readdir(target)).toContain("0001-a.mp3");
     expect(flareRequests.some((r) => r.download === true)).toBe(true);
     expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);
+    expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(true);
   });
 });

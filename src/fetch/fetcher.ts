@@ -145,12 +145,12 @@ export class Fetcher {
   }
 
   /**
-   * Hit the article HTML page so the jar picks up whatever Set-Cookie 4read sends
-   * (PHPSESSID, viewed_ids, …). Always runs before an m3u fetch — we do not synthesise cookies.
+   * Hit the article HTML page so the jar / Chrome session picks up whatever Set-Cookie
+   * 4read sends. When FlareSolverr is configured, uses Chrome (same session as the m3u fetch).
    */
   async warmBookPage(pageUrl: string): Promise<void> {
     try {
-      await this.getText(pageUrl);
+      await this.getText(pageUrl, { chrome: true });
     } catch (error) {
       log.debug(`book page warm-up failed for ${pageUrl}: ${String(error)}`);
     }
@@ -160,10 +160,19 @@ export class Fetcher {
    * Fetch a page as text. Tries a plain request first (cheap when the origin allows it) and
    * escalates to FlareSolverr on a challenge. Once Bun's TLS fingerprint is rejected, further
    * direct probes are skipped for a while — clearance cookies cannot be reused across JA3s.
+   *
+   * `chrome: true` or `purpose: "playlist"` skips Bun fetch and loads via FlareSolverr Chrome
+   * when configured (m3u must not use the direct TLS fingerprint).
    */
   async getText(
     url: string,
-    options: { referer?: string; accept?: string; purpose?: "document" | "playlist" } = {},
+    options: {
+      referer?: string;
+      accept?: string;
+      purpose?: "document" | "playlist";
+      /** Force FlareSolverr Chrome when available (used for m3u + its warm-up page). */
+      chrome?: boolean;
+    } = {},
   ): Promise<TextResult> {
     // Cooldown only blocks hammering the origin directly. FlareSolverr is a different client
     // and is how we keep crawling while Bun's fingerprint is rejected.
@@ -171,10 +180,19 @@ export class Fetcher {
       throw new CooldownError(this.limiter.cooldownRemainingMs());
     }
 
-    const flareFirst = this.preferFlareFirst() || this.limiter.inCooldown();
+    const wantChrome = Boolean(options.chrome || options.purpose === "playlist");
+    const flareFirst =
+      (wantChrome && this.flareConfigured) || this.preferFlareFirst() || this.limiter.inCooldown();
     const headers = this.browserHeaders(options);
 
+    if (wantChrome && this.flareConfigured) {
+      log.debug(`Chrome-only fetch for ${url}`);
+    }
+
     if (!flareFirst) {
+      if (wantChrome) {
+        log.debug(`FlareSolverr not configured — falling back to direct fetch for ${url}`);
+      }
       await this.limiter.acquire();
       const started = Bun.nanoseconds();
       try {

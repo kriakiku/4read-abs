@@ -310,12 +310,13 @@ export async function ensureAudioFromPlaylist(
 
   let body: string;
   try {
-    // Mirror the player: open the article HTML first (server sets PHPSESSID / viewed_ids / …),
-    // then request the playlist with that full cookie jar, same User-Agent, Accept */*, Referer.
+    // Mirror the player: open the article HTML in Chrome first, then load the playlist
+    // via the same Chrome session (not Bun fetch). Accept */*, Referer = article page.
     const referer = bookPageReferer(book, config);
     await fetcher.warmBookPage(referer);
     const text = await fetcher.getText(playlistUrl, {
       purpose: "playlist",
+      chrome: true,
       accept: "*/*",
       referer,
     });

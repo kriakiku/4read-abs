@@ -353,9 +353,10 @@ GET {source.baseUrl}/m33u2/{id}-{slug}.m3u
 де `{id}-{slug}` — ім’я статті без `.html`
 (`5546-garri-garrison-stalevyj-schur-2025-mp3.html` → `…/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u`).
 
-Очікується M3U зі списком mp3 (у потрібному порядку). Запити до плейлиста й треків
-йдуть через спільний Fetcher (прямий запит → FlareSolverr/Chrome при challenge), як і
-сторінки джерела. Файли зберігаються в staging / бібліотеку як `0001-origName.mp3`,
+Ожикується M3U зі списком mp3 (у потрібному порядку). **Плейлист і warm-up HTML
+сторінки книги** завантажуються через FlareSolverr Chrome (не Bun `fetch`), щоб
+обійти Cloudflare TLS fingerprint. Треки — Fetcher (прямий → Chrome download).
+Файли зберігаються в staging / бібліотеку як `0001-origName.mp3`,
 `0002-….mp3`, … (ім’я з pathname URL, query-параметри ігноруються). Повторний sync
 пропускає вже скачані треки (маркер `.4read-audio-playlist`). Порожній або недоступний
 плейлист — soft-fail.
