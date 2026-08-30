@@ -83,8 +83,9 @@ audio:
   # (article basename without .html, e.g. 5546-garri-garrison-stalevyj-schur-2025-mp3).
   # into the book folder (via Fetcher / FlareSolverr; soft-fail if missing).
   playlistTimeoutMs: 30000
-  # Per mp3 on reasd.org (nginx hotlink + Referer). Chapters are large; 45s page timeout is too short.
-  trackTimeoutMs: 600000
+  # Per mp3 on reasd.org. 4h chapter @ 128kbps ≈ 230MB — 10m is often too short on slow links.
+  # ENV: AUDIO_TRACK_TIMEOUT_MS
+  trackTimeoutMs: 3600000
   # Parallel CDN mp3 downloads within one book (ENV: AUDIO_TRACK_CONCURRENCY).
   trackConcurrency: 5
   minFileBytes: 1024

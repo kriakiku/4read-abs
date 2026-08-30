@@ -129,7 +129,7 @@ describe("configuration", () => {
     setEnv({});
     const config = parseConfigTextWithEnv("");
     expect(config.audio.playlistTimeoutMs).toBe(30_000);
-    expect(config.audio.trackTimeoutMs).toBe(600_000);
+    expect(config.audio.trackTimeoutMs).toBe(3_600_000);
     expect(config.audio.trackConcurrency).toBe(5);
     expect(config.source.baseUrl).toBe("https://4read.org");
   });

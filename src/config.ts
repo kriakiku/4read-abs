@@ -130,8 +130,8 @@ export const configSchema = z.object({
        * when Accept prepares a book / during library sync.
        */
       playlistTimeoutMs: z.number().int().min(1000).default(30_000),
-      /** Per-track CDN download (reasd.org can be slow; chapters are often 10–80 MB). */
-      trackTimeoutMs: z.number().int().min(1000).default(600_000),
+      /** Per-track CDN download. 4h @ 128kbps ≈ 230MB; slow links need a long wall clock. */
+      trackTimeoutMs: z.number().int().min(1000).default(3_600_000),
       /** How many CDN mp3s to download at once within one book (ENV: AUDIO_TRACK_CONCURRENCY). */
       trackConcurrency: z.number().int().min(1).max(32).default(5),
       minFileBytes: z.number().int().min(1).default(1024),
