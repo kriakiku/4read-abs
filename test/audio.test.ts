@@ -175,6 +175,11 @@ https://cdn.example/c.mp3
     );
   });
 
+  test("extractPlaylistUrlFromHtml returns null when preferKey matches nothing", () => {
+    const html = `<script>new Playerjs({file:"https://4read.org/m33u2/3130-other.m3u"});</script>`;
+    expect(extractPlaylistUrlFromHtml(html, undefined, "2901-wanted")).toBeNull();
+  });
+
   test("extractPlaylistFromHar returns m33u2 response body", () => {
     const har = {
       log: {

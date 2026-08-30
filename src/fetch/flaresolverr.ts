@@ -63,6 +63,13 @@ export type FlareImageResult = FlareFileResult;
 export class FlareSolverrClient {
   private session: string | null = null;
   private sessionAttempted = false;
+  /**
+   * One Chrome session cannot run concurrent navigations — responses get mixed
+   * (book A HTML attributed to book B). Serialise every request.get.
+   */
+  private gate: Promise<void> = Promise.resolve();
+  /** Stock FlareSolverr v2 removed `download: true`; stop retrying after first miss. */
+  private downloadSupported: boolean | null = null;
 
   constructor(
     private readonly endpoint: string,
@@ -104,6 +111,15 @@ export class FlareSolverrClient {
   }
 
   private async requestGet(url: string, extra: Record<string, unknown> = {}): Promise<FlareResponse> {
+    const run = this.gate.then(() => this.requestGetUnlocked(url, extra));
+    this.gate = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async requestGetUnlocked(url: string, extra: Record<string, unknown> = {}): Promise<FlareResponse> {
     await this.ensureSession();
     const payload: Record<string, unknown> = {
       cmd: "request.get",
@@ -182,9 +198,8 @@ export class FlareSolverrClient {
 
   /**
    * Fetch a file inside FlareSolverr's browser via patched `download: true` (base64 bytes).
-   * Works for images, audio, playlists, and other files that Chrome downloads rather than renders.
-   * Navigating to `.m3u` via plain `request.get` often leaves HTML in `solution.response`
-   * (previous page / empty document) — download mode is required for the real body.
+   * Stock FlareSolverr v2 removed this flag — after the first miss we skip further attempts.
+   * Navigating to `.m3u` via plain `request.get` leaves the previous HTML in `solution.response`.
    */
   async fetchDownload(
     url: string,
@@ -195,6 +210,8 @@ export class FlareSolverrClient {
       minBytes?: number;
     } = {},
   ): Promise<FlareFileResult | null> {
+    if (this.downloadSupported === false) return null;
+
     const minBytes = options.minBytes ?? 64;
     try {
       const extra: Record<string, unknown> = { download: true };
@@ -220,6 +237,7 @@ export class FlareSolverrClient {
             (file.mime ? ` (${file.mime})` : ""),
         );
         if (bytes && bytes.length >= minBytes && !looksLikeHtml(bytes)) {
+          this.downloadSupported = true;
           return {
             bytes,
             contentType: file.mime || sniffContentType(bytes) || "application/octet-stream",
@@ -234,8 +252,16 @@ export class FlareSolverrClient {
           `Chrome DOWNLOAD unavailable for ${url}: ${downloaded.message ?? "no download payload"}`,
         );
       }
+      // No download payload → stock FlareSolverr (v2 removed the flag).
+      if (this.downloadSupported === null) {
+        this.downloadSupported = false;
+        log.warn(
+          "FlareSolverr download:true returned no file payload — disabling download mode (stock FlareSolverr v2?). Use a build with download support, or m3u will be fetched directly after page warm-up.",
+        );
+      }
     } catch (error) {
       log.debug(`FlareSolverr download mode unavailable: ${String(error)}`);
+      if (this.downloadSupported === null) this.downloadSupported = false;
     }
     return null;
   }

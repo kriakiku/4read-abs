@@ -50,6 +50,17 @@ function looksLikeChallenge(status: number, body: string, headers?: Headers): bo
   );
 }
 
+/** True when a playlist response is clearly an HTML document rather than M3U text. */
+function looksLikeHtmlPlaylistMiss(body: string): boolean {
+  const head = body.trim().slice(0, 256).toLowerCase();
+  return (
+    head.startsWith("<!doctype") ||
+    head.startsWith("<html") ||
+    head.includes("<head") ||
+    head.includes("just a moment")
+  );
+}
+
 /**
  * How long to skip doomed Bun `fetch` probes after Cloudflare rejects them. Clearance cookies
  * from FlareSolverr do not transfer (different TLS fingerprint), so once direct fails we stick
@@ -288,9 +299,11 @@ export class Fetcher {
   }
 
   /**
-   * Fetch an m3u playlist body. Prefer FlareSolverr `download: true` — Chrome navigate to
-   * `.m3u` typically does not put the playlist text into `solution.response` (you get the
-   * previous HTML page size instead). Falls back to Chrome GET text when download is missing.
+   * Fetch an m3u playlist body.
+   * Stock FlareSolverr v2 cannot return `.m3u` via navigate (page_source stays previous HTML)
+   * and ignores `download: true`. After warming the book page we try a direct Bun GET with
+   * Chrome cookies/UA/Referer — `/m33u2/` is often not behind the HTML challenge.
+   * Patched Flare builds: `download: true` is used when direct fails.
    */
   async getPlaylistText(
     url: string,
@@ -306,40 +319,70 @@ export class Fetcher {
       purpose: "playlist",
     });
 
-    if (this.flareConfigured) {
-      await this.limiter.acquire({ ignoreCooldown: true });
-      const started = Bun.nanoseconds();
-      try {
-        const file = await this.flare.fetchDownload(url, {
-          cookies: this.jar.list(),
-          headers: flareHeadersFrom(headers),
-          minBytes: 8,
-        });
-        const ms = (Bun.nanoseconds() - started) / 1e6;
-        if (file) {
-          const body = new TextDecoder().decode(file.bytes);
-          this.limiter.recordSuccess();
-          this.record(url, "flaresolverr", 200, true, false, ms, "download");
-          log.info(`playlist via Chrome download (${file.bytes.length} bytes) ${url}`);
-          return { url, status: 200, body, strategy: "flaresolverr" };
-        }
-        this.record(url, "flaresolverr", null, false, false, ms, "download unavailable");
-        log.warn(
-          `playlist download mode returned no file for ${url}; falling back to Chrome navigate (often returns HTML)`,
-        );
-      } catch (error) {
-        const ms = (Bun.nanoseconds() - started) / 1e6;
-        this.record(url, "flaresolverr", null, false, false, ms, String(error));
-        log.warn(`playlist download failed for ${url}: ${String(error)}; trying Chrome navigate`);
+    // Direct first — do not honour directBlockedUntil (that flag is for CF HTML; m3u may work).
+    await this.limiter.acquire({ ignoreCooldown: true });
+    const directStarted = Bun.nanoseconds();
+    try {
+      log.info(`playlist: direct GET with page cookies → ${url}`);
+      const response = await fetch(url, {
+        headers,
+        redirect: "follow",
+        signal: AbortSignal.timeout(this.config.audio.playlistTimeoutMs),
+      });
+      const body = await response.text();
+      const ms = (Bun.nanoseconds() - directStarted) / 1e6;
+      this.jar.absorbSetCookie(response.headers);
+
+      if (response.ok && !looksLikeChallenge(response.status, body, response.headers) && !looksLikeHtmlPlaylistMiss(body)) {
+        this.limiter.recordSuccess();
+        this.record(url, "direct", response.status, true, false, ms);
+        log.info(`playlist via direct GET (${body.length} bytes) ${url}`);
+        return { url: response.url || url, status: response.status, body, strategy: "direct" };
       }
+      this.record(
+        url,
+        "direct",
+        response.status,
+        false,
+        true,
+        ms,
+        response.ok ? "html instead of m3u" : `HTTP ${response.status}`,
+      );
+      log.warn(
+        `playlist direct GET failed (${response.status}, ${body.length} bytes, html=${looksLikeHtmlPlaylistMiss(body)}) for ${url}`,
+      );
+    } catch (error) {
+      const ms = (Bun.nanoseconds() - directStarted) / 1e6;
+      if (error instanceof CooldownError) throw error;
+      this.limiter.recordFailure();
+      this.record(url, "direct", null, false, false, ms, String(error));
+      log.warn(`playlist direct GET error for ${url}: ${String(error)}`);
     }
 
-    return this.getText(url, {
-      purpose: "playlist",
-      chrome: true,
-      accept: "*/*",
-      referer: options.referer,
+    if (!this.flareConfigured) {
+      throw new ChallengeError(url);
+    }
+
+    await this.limiter.acquire({ ignoreCooldown: true });
+    const started = Bun.nanoseconds();
+    const file = await this.flare.fetchDownload(url, {
+      cookies: this.jar.list(),
+      headers: flareHeadersFrom(headers),
+      minBytes: 8,
     });
+    const ms = (Bun.nanoseconds() - started) / 1e6;
+    if (file) {
+      const body = new TextDecoder().decode(file.bytes);
+      this.limiter.recordSuccess();
+      this.record(url, "flaresolverr", 200, true, false, ms, "download");
+      log.info(`playlist via Chrome download (${file.bytes.length} bytes) ${url}`);
+      return { url, status: 200, body, strategy: "flaresolverr" };
+    }
+    this.record(url, "flaresolverr", null, false, false, ms, "download unavailable");
+    log.warn(
+      `playlist unavailable for ${url}: direct GET failed and FlareSolverr has no download:true (stock v2 returns previous HTML on .m3u navigate)`,
+    );
+    throw new ChallengeError(url);
   }
 
   /**

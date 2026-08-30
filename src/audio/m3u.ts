@@ -310,7 +310,9 @@ export function extractPlaylistUrlFromHtml(
         return url.toLowerCase().includes(needle);
       }
     });
-    if (preferred) return preferred;
+    // When preferKey is set but nothing matches (wrong page HTML from a session race, or
+    // only related-book embeds), return null so the caller uses the constructed {id}-{slug} URL.
+    return preferred ?? null;
   }
   return found[0] ?? null;
 }
@@ -454,7 +456,7 @@ export async function ensureAudioFromPlaylist(
     }
     try {
       log.info(
-        `audio: fetching playlist via Chrome download (source=${discovery ?? "unknown"}) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+        `audio: fetching playlist (source=${discovery ?? "unknown"}; direct GET or Chrome download) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
       );
       const text = await fetcher.getPlaylistText(playlistUrl, { referer });
       body = extractPlaylistBody(text.body);
