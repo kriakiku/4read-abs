@@ -346,6 +346,7 @@ describe("playlist audio fetch", () => {
     tempDirs.push(dir);
     const mp3 = Uint8Array.from({ length: 2048 }, (_, i) => i % 256);
     let mp3Hits = 0;
+    let bHits = 0;
 
     const origin = Bun.serve({
       port: 0,
@@ -362,9 +363,10 @@ describe("playlist audio fetch", () => {
         }
         if (pathname.endsWith(".mp3")) {
           mp3Hits += 1;
-          // Fail the middle track on the first pass.
-          if (pathname.endsWith("/b.mp3") && mp3Hits <= 2) {
-            return new Response("nope", { status: 500 });
+          // Fail the middle track on the first attempt (parallel-safe: count b alone).
+          if (pathname.endsWith("/b.mp3")) {
+            bHits += 1;
+            if (bHits === 1) return new Response("nope", { status: 500 });
           }
           return new Response(mp3, { headers: { "content-type": "audio/mpeg" } });
         }
@@ -376,6 +378,7 @@ describe("playlist audio fetch", () => {
     const { fetcher } = await makeFetcher();
     const config = configSchema.parse({
       source: { baseUrl: `http://127.0.0.1:${origin.port}`, minIntervalMs: 0 },
+      audio: { trackConcurrency: 5 },
     });
     const target = join(dir, "book");
 
