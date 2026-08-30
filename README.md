@@ -343,23 +343,17 @@ Cookie Cloudflare лежать у тій же БД; якщо застаріли,
 
 ## Аудіо з плейлистів 4read
 
-Після **Accept** (і при наступному library sync) для кожної книги з `slug` виконується
-запит до базового домену джерела (`source.baseUrl`, зазвичай `https://4read.org`):
+Після **Accept** Chrome відкриває HTML сторінки книги (коротка пауза + HAR, якщо
+FlareSolverr підтримує). Тіло `/m33u2/….m3u` береться з мережевих запитів сторінки,
+або URL читається з `Playerjs({file:…})` і m3u вантажиться окремим Chrome GET.
+Треки — Fetcher (прямий → Chrome download). Файли: `0001-origName.mp3`, …
+Повторний sync пропускає вже скачані треки (маркер `.4read-audio-playlist`).
 
 ```
 GET {source.baseUrl}/m33u2/{id}-{slug}.m3u
 ```
 
-де `{id}-{slug}` — ім’я статті без `.html`
-(`5546-garri-garrison-stalevyj-schur-2025-mp3.html` → `…/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u`).
-
-Ожикується M3U зі списком mp3 (у потрібному порядку). **Плейлист і warm-up HTML
-сторінки книги** завантажуються через FlareSolverr Chrome (не Bun `fetch`), щоб
-обійти Cloudflare TLS fingerprint. Треки — Fetcher (прямий → Chrome download).
-Файли зберігаються в staging / бібліотеку як `0001-origName.mp3`,
-`0002-….mp3`, … (ім’я з pathname URL, query-параметри ігноруються). Повторний sync
-пропускає вже скачані треки (маркер `.4read-audio-playlist`). Порожній або недоступний
-плейлист — soft-fail.
+де `{id}-{slug}` — ім’я статті без `.html`.
 
 Якщо тека вже має `metadata.json` / обкладинку, але **без** аудіо (стан черги
 `prepared`, або matched item у ABS без медіафайлів), наступний `sync` знову пробує

@@ -269,10 +269,72 @@ export function bookPageReferer(
 }
 
 /**
- * Fetch `{source.baseUrl}/m33u2/{id}-{slug}.m3u` and download each listed media file into `dir`
- * in playlist order as `0001-origName.mp3`, … (query/hash stripped from the local name).
- * Uses the shared Fetcher (direct → FlareSolverr Chrome) so challenged hosts still work.
- * Soft-skips when the playlist is empty or unreachable.
+ * Pull the player playlist URL from book HTML, e.g.
+ * `new Playerjs({file:"https://4read.org/m33u2/5546-….m3u"})`.
+ */
+export function extractPlaylistUrlFromHtml(html: string, baseUrl?: string): string | null {
+  const patterns = [
+    /Playerjs\(\s*\{[^}]*\bfile\s*:\s*["']([^"']*m33u2[^"']+\.m3u[^"']*)["']/i,
+    /["'](https?:\/\/[^"']*\/m33u2\/[^"']+\.m3u[^"']*)["']/i,
+    /["'](\/m33u2\/[^"']+\.m3u[^"']*)["']/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(html);
+    const raw = match?.[1]?.trim();
+    if (!raw) continue;
+    try {
+      return new URL(raw, baseUrl ?? "https://4read.org/").href;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+interface HarLike {
+  log?: {
+    entries?: Array<{
+      request?: { url?: string };
+      response?: {
+        content?: { text?: string; encoding?: string; mimeType?: string };
+        status?: number;
+      };
+    }>;
+  };
+}
+
+/**
+ * If Chrome recorded a HAR while loading the book page, reuse the m33u2 response body
+ * (and URL) from that network traffic instead of issuing a second playlist GET.
+ */
+export function extractPlaylistFromHar(
+  har: unknown,
+): { url: string; body: string } | null {
+  const entries = (har as HarLike | null)?.log?.entries;
+  if (!Array.isArray(entries)) return null;
+
+  for (const entry of entries) {
+    const url = entry.request?.url ?? "";
+    if (!/\/m33u2\/.+\.m3u(\?|$)/i.test(url)) continue;
+    const content = entry.response?.content;
+    let text = content?.text ?? "";
+    if (!text) continue;
+    if (content?.encoding === "base64") {
+      try {
+        text = Buffer.from(text, "base64").toString("utf8");
+      } catch {
+        continue;
+      }
+    }
+    const body = extractPlaylistBody(text);
+    if (body) return { url, body };
+  }
+  return null;
+}
+
+/**
+ * Load the book page in Chrome, prefer the m3u body from page network/HAR or the Playerjs
+ * URL embedded in HTML, then download tracks. Soft-skips when the playlist is empty.
  */
 export async function ensureAudioFromPlaylist(
   book: BookWithPeople,
@@ -280,50 +342,77 @@ export async function ensureAudioFromPlaylist(
   config: Config,
   fetcher: Fetcher,
 ): Promise<AudioFetchResult | null> {
-  const playlistUrl = playlistUrlFor(book, config);
-  if (!playlistUrl) {
-    log.warn(`audio skipped for ${book.source_id}: cannot build playlist key from url/slug`);
-    return null;
-  }
-
-  log.info(`audio: fetching playlist for ${book.source_id} → ${playlistUrl}`);
+  const constructedUrl = playlistUrlFor(book, config);
+  const referer = bookPageReferer(book, config);
 
   const markerPath = join(dir, PLAYLIST_MARKER);
-  try {
-    const marker = (await readFile(markerPath, "utf8")).trim();
-    if (marker === playlistUrl) {
-      const existing = (await readdir(dir)).filter((name) => /\.(mp3|m4a|m4b|flac|ogg|opus)$/i.test(name));
-      if (existing.length > 0) {
-        log.debug(`audio already present for ${book.source_id} (${existing.length} files)`);
-        return {
-          playlistUrl,
-          tracks: existing.length,
-          downloaded: 0,
-          skipped: existing.length,
-          files: existing.map((name) => join(dir, name)),
-        };
+  const markerCandidate = constructedUrl;
+  if (markerCandidate) {
+    try {
+      const marker = (await readFile(markerPath, "utf8")).trim();
+      if (marker === markerCandidate) {
+        const existing = (await readdir(dir)).filter((name) => /\.(mp3|m4a|m4b|flac|ogg|opus)$/i.test(name));
+        if (existing.length > 0) {
+          log.debug(`audio already present for ${book.source_id} (${existing.length} files)`);
+          return {
+            playlistUrl: markerCandidate,
+            tracks: existing.length,
+            downloaded: 0,
+            skipped: existing.length,
+            files: existing.map((name) => join(dir, name)),
+          };
+        }
       }
+    } catch {
+      // No marker yet.
     }
-  } catch {
-    // No marker yet.
   }
 
-  let body: string;
+  log.info(`audio: loading book page for playlist discovery ${book.source_id} → ${referer}`);
+
+  let playlistUrl = constructedUrl;
+  let body: string | null = null;
+
   try {
-    // Mirror the player: open the article HTML in Chrome first, then load the playlist
-    // via the same Chrome session (not Bun fetch). Accept */*, Referer = article page.
-    const referer = bookPageReferer(book, config);
-    await fetcher.warmBookPage(referer);
-    const text = await fetcher.getText(playlistUrl, {
-      purpose: "playlist",
-      chrome: true,
-      accept: "*/*",
-      referer,
-    });
-    body = extractPlaylistBody(text.body);
+    const page = await fetcher.warmBookPage(referer);
+    if (page?.har) {
+      const fromHar = extractPlaylistFromHar(page.har);
+      if (fromHar) {
+        playlistUrl = fromHar.url;
+        body = fromHar.body;
+        log.info(`audio: got m3u from Chrome HAR for ${book.source_id}`);
+      }
+    }
+    if (!body && page?.body) {
+      const fromHtml = extractPlaylistUrlFromHtml(page.body, config.source.baseUrl);
+      if (fromHtml) {
+        playlistUrl = fromHtml;
+        log.info(`audio: playlist URL from player HTML → ${playlistUrl}`);
+      }
+    }
   } catch (error) {
-    log.warn(`playlist fetch failed for ${book.slug}: ${String(error)}`);
+    log.debug(`book page warm-up error for ${book.source_id}: ${String(error)}`);
+  }
+
+  if (!playlistUrl) {
+    log.warn(`audio skipped for ${book.source_id}: cannot resolve playlist URL`);
     return null;
+  }
+
+  if (!body) {
+    try {
+      log.info(`audio: fetching playlist via Chrome for ${book.source_id} → ${playlistUrl}`);
+      const text = await fetcher.getText(playlistUrl, {
+        purpose: "playlist",
+        chrome: true,
+        accept: "*/*",
+        referer,
+      });
+      body = extractPlaylistBody(text.body);
+    } catch (error) {
+      log.warn(`playlist fetch failed for ${book.slug}: ${String(error)}`);
+      return null;
+    }
   }
 
   if (!body) {

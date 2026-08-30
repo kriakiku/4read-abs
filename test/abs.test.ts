@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { configSchema, type Config } from "../src/config.ts";
 import type { BookWithPeople } from "../src/catalog/store.ts";
 import type { AbsItem } from "../src/abs/client.ts";
+import { AudiobookshelfClient } from "../src/abs/client.ts";
 import {
   buildSidecar,
   formatSeries,
@@ -420,5 +421,26 @@ describe("staging and placement", () => {
     await writeFile(join(staged.dir, "a.mp3"), "x");
     const report = await placeIntoLibrary(staged, join(root, "library", "B"), "full", settings);
     expect(report.errors).toHaveLength(0);
+  });
+});
+
+describe("Audiobookshelf client", () => {
+  test("library scan accepts bare OK text instead of JSON", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const { pathname } = new URL(request.url);
+        if (pathname.endsWith("/scan") && request.method === "POST") {
+          return new Response("OK", { headers: { "content-type": "text/plain" } });
+        }
+        return new Response("no", { status: 404 });
+      },
+    });
+    try {
+      const client = new AudiobookshelfClient(`http://127.0.0.1:${server.port}`, "test-key");
+      await client.scanLibrary("lib-1");
+    } finally {
+      await server.stop(true);
+    }
   });
 });

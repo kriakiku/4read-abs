@@ -7,6 +7,8 @@ import { openDb } from "../src/db.ts";
 import {
   ensureAudioFromPlaylist,
   extractPlaylistBody,
+  extractPlaylistFromHar,
+  extractPlaylistUrlFromHtml,
   parseM3u,
   playlistUrlFor,
   trackFileName,
@@ -151,6 +153,37 @@ https://cdn.example/c.mp3
       "0001-noext.mp3",
     );
     expect(trackFileName(0, { url: "https://cdn.example/", title: null })).toBe("0001-track-0001.mp3");
+  });
+
+  test("extractPlaylistUrlFromHtml reads Playerjs file=", () => {
+    const html = `<script>var playerjs1 = new Playerjs({id:"playerjs1",file:"https://4read.org/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u"});</script>`;
+    expect(extractPlaylistUrlFromHtml(html)).toBe(
+      "https://4read.org/m33u2/5546-garri-garrison-stalevyj-schur-2025-mp3.m3u",
+    );
+    expect(
+      extractPlaylistUrlFromHtml(`file:"/m33u2/8054-dzhordzh-martin-lishe-za-vchora.m3u"`, "https://4read.org"),
+    ).toBe("https://4read.org/m33u2/8054-dzhordzh-martin-lishe-za-vchora.m3u");
+  });
+
+  test("extractPlaylistFromHar returns m33u2 response body", () => {
+    const har = {
+      log: {
+        entries: [
+          {
+            request: { url: "https://4read.org/m33u2/6840-book.m3u" },
+            response: {
+              status: 200,
+              content: { text: "#EXTM3U\nhttps://cdn.example/a.mp3\n", mimeType: "audio/x-mpegurl" },
+            },
+          },
+        ],
+      },
+    };
+    expect(extractPlaylistFromHar(har)).toEqual({
+      url: "https://4read.org/m33u2/6840-book.m3u",
+      body: "#EXTM3U\nhttps://cdn.example/a.mp3",
+    });
+    expect(extractPlaylistFromHar({})).toBeNull();
   });
 
   test("extractPlaylistBody peels FlareSolverr HTML wrappers", () => {
@@ -401,12 +434,30 @@ describe("playlist audio fetch", () => {
             solution: {
               url: target,
               status: 200,
-              response: "<html><body>book</body></html>",
+              response: `<html><body><script>new Playerjs({file:"http://127.0.0.1:${origin.port}/m33u2/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u"});</script></body></html>`,
               cookies: [
                 { name: "PHPSESSID", value: "from-html", expires: -1 },
                 { name: "viewed_ids", value: "6840", expires: -1 },
               ],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              har: {
+                log: {
+                  entries: [
+                    {
+                      request: {
+                        url: `http://127.0.0.1:${origin.port}/m33u2/6840-mskingbean89-vsi-molodi-chuvaki-pershij-rik.m3u`,
+                      },
+                      response: {
+                        status: 200,
+                        content: {
+                          text: `#EXTM3U\n#EXTINF:-1,A\nhttp://127.0.0.1:${origin.port}/a.mp3?tok=1\n`,
+                          mimeType: "audio/x-mpegurl",
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
             },
           });
         }
@@ -440,7 +491,9 @@ describe("playlist audio fetch", () => {
       .filter((r) => r.cmd === "request.get")
       .map((r) => String(r.url ?? ""));
     expect(chromeUrls.some((u) => u.includes(".html"))).toBe(true);
-    expect(chromeUrls.some((u) => u.includes(".m3u"))).toBe(true);
+    // Playlist came from the page HAR — no separate Chrome GET for .m3u needed.
+    expect(chromeUrls.some((u) => u.includes(".m3u"))).toBe(false);
+    expect(flareRequests.some((r) => r.recordHar === true)).toBe(true);
     // m3u must not be fetched by Bun against the origin
     expect(originHits.some((p) => p.endsWith(".m3u"))).toBe(false);
     expect(fetcher.jar.phpSessionId()).toBeTruthy();

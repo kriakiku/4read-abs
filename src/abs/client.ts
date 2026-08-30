@@ -138,7 +138,16 @@ export class AudiobookshelfClient {
     if (response.status === 204) return undefined as T;
     const text = await response.text();
     if (!text) return undefined as T;
-    return JSON.parse(text) as T;
+    const trimmed = text.trim();
+    // Some ABS endpoints (library scan) return bare `OK` instead of JSON.
+    if (/^ok$/i.test(trimmed)) return undefined as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch (error) {
+      throw new Error(
+        `ABS ${init.method ?? "GET"} ${path}: expected JSON, got ${JSON.stringify(trimmed.slice(0, 80))} (${String(error)})`,
+      );
+    }
   }
 
   async ping(): Promise<boolean> {

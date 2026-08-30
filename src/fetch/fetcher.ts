@@ -14,6 +14,7 @@ export interface TextResult {
   status: number;
   body: string;
   strategy: Strategy;
+  har?: unknown;
 }
 
 export interface BinaryResult {
@@ -145,14 +146,19 @@ export class Fetcher {
   }
 
   /**
-   * Hit the article HTML page so the jar / Chrome session picks up whatever Set-Cookie
-   * 4read sends. When FlareSolverr is configured, uses Chrome (same session as the m3u fetch).
+   * Hit the article HTML in Chrome so cookies settle and the player can request its m3u.
+   * When FlareSolverr is configured, waits briefly and asks for a HAR when the build supports it.
    */
-  async warmBookPage(pageUrl: string): Promise<void> {
+  async warmBookPage(pageUrl: string): Promise<TextResult | null> {
     try {
-      await this.getText(pageUrl, { chrome: true });
+      return await this.getText(pageUrl, {
+        chrome: true,
+        waitInSeconds: this.flareConfigured ? 3 : undefined,
+        recordHar: this.flareConfigured,
+      });
     } catch (error) {
       log.debug(`book page warm-up failed for ${pageUrl}: ${String(error)}`);
+      return null;
     }
   }
 
@@ -172,6 +178,8 @@ export class Fetcher {
       purpose?: "document" | "playlist";
       /** Force FlareSolverr Chrome when available (used for m3u + its warm-up page). */
       chrome?: boolean;
+      waitInSeconds?: number;
+      recordHar?: boolean;
     } = {},
   ): Promise<TextResult> {
     // Cooldown only blocks hammering the origin directly. FlareSolverr is a different client
@@ -246,6 +254,8 @@ export class Fetcher {
       const result = await this.flare.get(url, {
         cookies: this.jar.list(),
         headers: flareHeadersFrom(headers),
+        waitInSeconds: options.waitInSeconds,
+        recordHar: options.recordHar,
       });
       const ms = (Bun.nanoseconds() - started) / 1e6;
       this.jar.setUserAgent(result.userAgent);
@@ -261,7 +271,13 @@ export class Fetcher {
       if (result.status >= 400) {
         throw new Error(`HTTP ${result.status} for ${url} (via FlareSolverr)`);
       }
-      return { url, status: result.status, body: result.body, strategy: "flaresolverr" };
+      return {
+        url,
+        status: result.status,
+        body: result.body,
+        strategy: "flaresolverr",
+        har: result.har,
+      };
     } catch (error) {
       const ms = (Bun.nanoseconds() - started) / 1e6;
       if (error instanceof ChallengeError) throw error;

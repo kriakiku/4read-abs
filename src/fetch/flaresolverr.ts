@@ -28,6 +28,7 @@ interface FlareSolution {
   response?: string;
   screenshot?: string;
   download?: FlareDownload | FlareDownload[];
+  har?: unknown;
 }
 
 interface FlareResponse {
@@ -42,6 +43,8 @@ export interface FlareResult {
   body: string;
   cookies: StoredCookie[];
   userAgent?: string;
+  /** Present when the FlareSolverr build supports `recordHar: true`. */
+  har?: unknown;
 }
 
 export interface FlareFileResult {
@@ -129,6 +132,10 @@ export class FlareSolverrClient {
     options: {
       cookies?: StoredCookie[];
       headers?: Record<string, string>;
+      /** Extra seconds after the challenge so the player can fire its m3u request. */
+      waitInSeconds?: number;
+      /** Ask Chrome to record a HAR (supported on some FlareSolverr builds). */
+      recordHar?: boolean;
     } = {},
   ): Promise<FlareResult> {
     log.info(`Chrome GET ${url}`);
@@ -144,6 +151,12 @@ export class FlareSolverrClient {
     if (options.headers && Object.keys(options.headers).length > 0) {
       extra.headers = options.headers;
     }
+    if (options.waitInSeconds && options.waitInSeconds > 0) {
+      extra.waitInSeconds = options.waitInSeconds;
+    }
+    if (options.recordHar) {
+      extra.recordHar = true;
+    }
     const result = await this.requestGet(url, extra);
     if (result.status !== "ok" || !result.solution) {
       throw new Error(`FlareSolverr error: ${result.message ?? "no solution"}`);
@@ -151,7 +164,8 @@ export class FlareSolverrClient {
 
     const solution = result.solution;
     log.info(
-      `Chrome GET done in ${Math.round((Date.now() - started) / 1000)}s → HTTP ${solution.status ?? 0} (${(solution.response ?? "").length} bytes)`,
+      `Chrome GET done in ${Math.round((Date.now() - started) / 1000)}s → HTTP ${solution.status ?? 0} (${(solution.response ?? "").length} bytes)` +
+        (solution.har ? ", har captured" : ""),
     );
     return {
       status: solution.status ?? 0,
@@ -162,6 +176,7 @@ export class FlareSolverrClient {
         expires: c.expires,
       })),
       userAgent: solution.userAgent,
+      har: solution.har,
     };
   }
 
