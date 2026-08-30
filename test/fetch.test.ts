@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { configSchema, type Config } from "../src/config.ts";
 import { openDb, type Db } from "../src/db.ts";
 import { CookieJar } from "../src/fetch/cookies.ts";
-import { ChallengeError, CooldownError, Fetcher, flareHeadersFrom } from "../src/fetch/fetcher.ts";
+import { ChallengeError, CooldownError, Fetcher, flareHeadersFrom, formatBytes, formatDuration, formatRate, readResponseBodyWithProgress } from "../src/fetch/fetcher.ts";
 import { AdaptiveLimiter } from "../src/fetch/limiter.ts";
 
 /** The interstitial 4read.org serves to non-browser clients. */
@@ -210,6 +210,39 @@ describe("cookie jar", () => {
     jar.set([{ name: "cf_clearance", value: "legacy" }]);
     expect(jar.header("https://4read.org/")).toContain("legacy");
     expect(jar.header("https://reasd.org/")).toBeUndefined();
+  });
+
+  test("download progress helpers format sizes and durations", () => {
+    expect(formatBytes(500)).toBe("500 B");
+    expect(formatBytes(2048)).toBe("2.0 KiB");
+    expect(formatRate(1024 * 1024)).toBe("1.0 MiB/s");
+    expect(formatDuration(45)).toBe("45s");
+    expect(formatDuration(125)).toBe("2m 5s");
+  });
+
+  test("readResponseBodyWithProgress reassembles a streamed body", async () => {
+    const payload = Uint8Array.from({ length: 50_000 }, (_, i) => i % 256);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const chunk = 8_000;
+        for (let offset = 0; offset < payload.length; offset += chunk) {
+          controller.enqueue(payload.subarray(offset, Math.min(offset + chunk, payload.length)));
+        }
+        controller.close();
+      },
+    });
+    const response = new Response(stream, {
+      status: 200,
+      headers: { "content-length": String(payload.length), "content-type": "audio/mpeg" },
+    });
+    const bytes = await readResponseBodyWithProgress(response, {
+      label: "test/track.mp3",
+      totalBytes: payload.length,
+      logEveryMs: 60_000,
+    });
+    expect(bytes.length).toBe(payload.length);
+    expect(bytes[0]).toBe(payload[0]);
+    expect(bytes[bytes.length - 1]).toBe(payload[payload.length - 1]);
   });
 
   test("flareHeadersFrom strips sec-fetch-* and Referer (rejected by flaresolverr-go)", () => {

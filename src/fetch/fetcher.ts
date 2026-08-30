@@ -652,7 +652,8 @@ export class Fetcher {
     }
 
     const timeoutMs = this.config.audio.trackTimeoutMs;
-    log.info(`CDN track direct GET (Referer ${ref}, timeout ${Math.round(timeoutMs / 1000)}s) → ${url}`);
+    const label = trackLabel(url);
+    log.info(`CDN track download start ${label} (Referer ${ref}, timeout ${Math.round(timeoutMs / 1000)}s)`);
     try {
       const response = await fetch(url, {
         headers,
@@ -660,22 +661,42 @@ export class Fetcher {
         signal: AbortSignal.timeout(timeoutMs),
       });
       const contentType = response.headers.get("content-type");
+      const totalHeader = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+      const totalBytes = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
+
+      if (!response.ok) {
+        const ms = (Bun.nanoseconds() - started) / 1e6;
+        const peek = new Uint8Array(await response.arrayBuffer());
+        this.record(url, "direct", response.status, false, false, ms, "hotlink html");
+        log.warn(
+          `CDN track rejected (HTTP ${response.status}, ${peek.length} bytes) for ${label} — need Referer ${ref}`,
+        );
+        throw new Error(`CDN hotlink rejected (HTTP ${response.status}) for ${url}`);
+      }
+
+      const bytes = await readResponseBodyWithProgress(response, {
+        label,
+        totalBytes,
+        logEveryMs: 5_000,
+      });
       const ms = (Bun.nanoseconds() - started) / 1e6;
-      const bytes = new Uint8Array(await response.arrayBuffer());
       const head = new TextDecoder().decode(bytes.slice(0, 200)).toLowerCase();
       const html =
         head.includes("<!doctype") || head.includes("<html") || (contentType ?? "").includes("text/html");
 
-      if (!response.ok || html) {
-        this.record(url, "direct", response.status, false, false, ms, html ? "hotlink html" : undefined);
+      if (html) {
+        this.record(url, "direct", response.status, false, false, ms, "hotlink html");
         log.warn(
-          `CDN track rejected (HTTP ${response.status}, ${bytes.length} bytes, html=${html}) for ${url} — need Referer ${ref}`,
+          `CDN track rejected (HTTP ${response.status}, ${bytes.length} bytes, html=true) for ${label} — need Referer ${ref}`,
         );
         throw new Error(`CDN hotlink rejected (HTTP ${response.status}) for ${url}`);
       }
 
       this.record(url, "direct", response.status, true, false, ms);
-      log.info(`CDN track via direct GET (${bytes.length} bytes) ${url}`);
+      const speed = ms > 0 ? bytes.length / (ms / 1000) : 0;
+      log.info(
+        `CDN track download done ${label}: ${formatBytes(bytes.length)} in ${formatDuration(ms / 1000)} (${formatRate(speed)})`,
+      );
       return { url, status: response.status, bytes, contentType };
     } catch (error) {
       if (error instanceof CooldownError) throw error;
@@ -725,6 +746,97 @@ export function flareHeadersFrom(headers: Record<string, string>): Record<string
 
 /** Only headers flaresolverr-go accepts on request.get (Go forbids Referer, sec-*, Cookie, Host, …). */
 const FLARE_HEADER_ALLOW = new Set(["accept", "accept-language", "accept-encoding"]);
+
+function trackLabel(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.replace(/^\/+/, "") || parsed.hostname;
+  } catch {
+    return url.slice(0, 80);
+  }
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+export function formatRate(bytesPerSec: number): string {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "0 B/s";
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "?";
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${s}s`;
+}
+
+/**
+ * Read a Response body while logging progress (bytes, %, speed, ETA).
+ * Used for slow CDN mp3 downloads so operators can see movement in the log.
+ */
+export async function readResponseBodyWithProgress(
+  response: Response,
+  options: { label: string; totalBytes?: number | null; logEveryMs?: number } = { label: "download" },
+): Promise<Uint8Array> {
+  const total = options.totalBytes && options.totalBytes > 0 ? options.totalBytes : null;
+  const logEveryMs = options.logEveryMs ?? 5_000;
+  const body = response.body;
+  if (!body) {
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  const started = Date.now();
+  let lastLogAt = started;
+
+  if (total) {
+    log.info(`CDN track progress ${options.label}: 0% of ${formatBytes(total)}`);
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value?.length) continue;
+    chunks.push(value);
+    received += value.length;
+    const now = Date.now();
+    if (now - lastLogAt >= logEveryMs) {
+      lastLogAt = now;
+      const elapsedSec = Math.max(0.001, (now - started) / 1000);
+      const speed = received / elapsedSec;
+      if (total) {
+        const pct = Math.min(99, Math.floor((received / total) * 100));
+        const remain = Math.max(0, total - received);
+        const eta = speed > 0 ? remain / speed : NaN;
+        log.info(
+          `CDN track progress ${options.label}: ${pct}% ${formatBytes(received)}/${formatBytes(total)} · ${formatRate(speed)} · ETA ${formatDuration(eta)}`,
+        );
+      } else {
+        log.info(
+          `CDN track progress ${options.label}: ${formatBytes(received)} · ${formatRate(speed)}`,
+        );
+      }
+    }
+  }
+
+  const out = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
 
 /**
  * Stub Playerjs / pause media while Chrome is briefly on the book HTML.
