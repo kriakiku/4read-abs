@@ -28,7 +28,7 @@ describe("latin / volume helpers", () => {
     expect(inferVolumeHint("Something Volume 4")).toBe(4);
   });
 
-  test("parses Hardcover packed year ranges", () => {
+  test("parses packed year ranges", () => {
     const range = parseYearRange("All The Young Dudes - Volume Two: Years 5 - 7");
     expect(range).toEqual({ from: 5, to: 7 });
     expect(yearRangeContains(range!, 5)).toBe(true);

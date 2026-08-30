@@ -1,7 +1,6 @@
 import { AudiobookshelfClient } from "./abs/client.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { openDb, type Db } from "./db.ts";
-import { HardcoverClient } from "./enrich/hardcover.ts";
 import { Fetcher } from "./fetch/fetcher.ts";
 import { logger, setLogLevel } from "./log.ts";
 
@@ -21,7 +20,6 @@ export class AppContext {
   configPath: string;
   fetcher: Fetcher;
   abs: AudiobookshelfClient;
-  hardcover: HardcoverClient;
   readonly jobs = new Map<string, JobStatus>();
   readonly startedAt = new Date().toISOString();
 
@@ -35,7 +33,6 @@ export class AppContext {
     this.db = openDb(this.config.paths.data);
     this.fetcher = new Fetcher(this.db, this.config);
     this.abs = new AudiobookshelfClient(this.config.audiobookshelf.url, this.config.audiobookshelf.apiKey);
-    this.hardcover = new HardcoverClient(this.db, this.config);
   }
 
   /** Rebuild everything that depends on config after an edit, keeping the database open. */
@@ -45,7 +42,6 @@ export class AppContext {
     setLogLevel(config.logLevel);
     this.fetcher = new Fetcher(this.db, config);
     this.abs = new AudiobookshelfClient(config.audiobookshelf.url, config.audiobookshelf.apiKey);
-    this.hardcover = new HardcoverClient(this.db, config);
   }
 
   jobStatus(name: string): JobStatus {

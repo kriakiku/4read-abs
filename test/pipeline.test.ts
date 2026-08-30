@@ -192,23 +192,14 @@ schedule:
   for (const key of [
     "ABS_URL",
     "ABS_API_KEY",
-    "HARDCOVER_API_KEY",
-    "HARDCOVER_ENABLED",
     "FLARESOLVERR_URL",
     "STAGING_DIR",
     "DATA_DIR",
     "ABS_LIBRARY_DIR",
     "SOURCE_BASE_URL",
-    "OPENAI_API_KEY",
-    "OPENCODE_GO_API_KEY",
-    "AI_API_KEY",
-    "AI_ENABLED",
-    "COVERS_PREFER",
   ]) {
     delete process.env[key];
   }
-  process.env.HARDCOVER_ENABLED = "false";
-  process.env.AI_ENABLED = "false";
 
   const ctx = new AppContext(configPath);
 

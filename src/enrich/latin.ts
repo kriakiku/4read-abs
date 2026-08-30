@@ -69,7 +69,7 @@ export interface YearRange {
 }
 
 /**
- * Hardcover often packs several Hogwarts years into one edition title, e.g.
+ * Some English edition titles pack several Hogwarts years into one volume, e.g.
  * "All The Young Dudes - Volume Two: Years 5 - 7".
  */
 export function parseYearRange(title: string): YearRange | null {
