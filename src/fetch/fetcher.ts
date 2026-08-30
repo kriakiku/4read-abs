@@ -288,6 +288,61 @@ export class Fetcher {
   }
 
   /**
+   * Fetch an m3u playlist body. Prefer FlareSolverr `download: true` — Chrome navigate to
+   * `.m3u` typically does not put the playlist text into `solution.response` (you get the
+   * previous HTML page size instead). Falls back to Chrome GET text when download is missing.
+   */
+  async getPlaylistText(
+    url: string,
+    options: { referer?: string } = {},
+  ): Promise<TextResult> {
+    if (this.limiter.inCooldown() && !this.flareConfigured) {
+      throw new CooldownError(this.limiter.cooldownRemainingMs());
+    }
+
+    const headers = this.browserHeaders({
+      referer: options.referer,
+      accept: "*/*",
+      purpose: "playlist",
+    });
+
+    if (this.flareConfigured) {
+      await this.limiter.acquire({ ignoreCooldown: true });
+      const started = Bun.nanoseconds();
+      try {
+        const file = await this.flare.fetchDownload(url, {
+          cookies: this.jar.list(),
+          headers: flareHeadersFrom(headers),
+          minBytes: 8,
+        });
+        const ms = (Bun.nanoseconds() - started) / 1e6;
+        if (file) {
+          const body = new TextDecoder().decode(file.bytes);
+          this.limiter.recordSuccess();
+          this.record(url, "flaresolverr", 200, true, false, ms, "download");
+          log.info(`playlist via Chrome download (${file.bytes.length} bytes) ${url}`);
+          return { url, status: 200, body, strategy: "flaresolverr" };
+        }
+        this.record(url, "flaresolverr", null, false, false, ms, "download unavailable");
+        log.warn(
+          `playlist download mode returned no file for ${url}; falling back to Chrome navigate (often returns HTML)`,
+        );
+      } catch (error) {
+        const ms = (Bun.nanoseconds() - started) / 1e6;
+        this.record(url, "flaresolverr", null, false, false, ms, String(error));
+        log.warn(`playlist download failed for ${url}: ${String(error)}; trying Chrome navigate`);
+      }
+    }
+
+    return this.getText(url, {
+      purpose: "playlist",
+      chrome: true,
+      accept: "*/*",
+      referer: options.referer,
+    });
+  }
+
+  /**
    * Fetch binary content (covers, audio tracks, …). Bun's TLS fingerprint cannot reuse
    * FlareSolverr clearance cookies, so a challenged direct download falls back to fetching
    * inside FlareSolverr's Chrome (download API; image URLs may also use a screenshot).
@@ -372,7 +427,12 @@ export class Fetcher {
     try {
       // Audio must not fall back to a PNG screenshot of the URL.
       const file =
-        purpose === "media" ? await this.flare.fetchDownload(url) : await this.flare.fetchImage(url);
+        purpose === "media"
+          ? await this.flare.fetchDownload(url, {
+              cookies: this.jar.list(),
+              headers: flareHeadersFrom(this.browserHeaders({ referer: options.referer, purpose: "playlist" })),
+            })
+          : await this.flare.fetchImage(url);
       const ms = (Bun.nanoseconds() - started) / 1e6;
       if (!file) {
         this.limiter.recordChallenge();

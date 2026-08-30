@@ -165,6 +165,16 @@ https://cdn.example/c.mp3
     ).toBe("https://4read.org/m33u2/8054-dzhordzh-martin-lishe-za-vchora.m3u");
   });
 
+  test("extractPlaylistUrlFromHtml prefers URL matching book key", () => {
+    const html = `
+      <script>new Playerjs({file:"https://4read.org/m33u2/3130-related-book.m3u"});</script>
+      <script>new Playerjs({file:"https://4read.org/m33u2/2901-this-book.m3u"});</script>
+    `;
+    expect(extractPlaylistUrlFromHtml(html, undefined, "2901-this-book")).toBe(
+      "https://4read.org/m33u2/2901-this-book.m3u",
+    );
+  });
+
   test("extractPlaylistFromHar returns m33u2 response body", () => {
     const har = {
       log: {
@@ -541,14 +551,32 @@ describe("playlist audio fetch", () => {
             },
           });
         }
-        if (target.includes(".m3u")) {
+        if (payload.download && target.includes(".m3u")) {
           const base = `http://127.0.0.1:${origin.port}`;
+          const m3u = `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`;
           return Response.json({
             status: "ok",
             solution: {
               url: target,
               status: 200,
-              response: `#EXTM3U\n#EXTINF:-1,A\n${base}/a.mp3?tok=1\n`,
+              cookies: [],
+              userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
+              download: {
+                filename: "book.m3u",
+                mime: "audio/x-mpegurl",
+                data: Buffer.from(m3u).toString("base64"),
+              },
+            },
+          });
+        }
+        if (target.includes(".m3u")) {
+          // Simulate stock Chrome navigate: returns previous HTML page, not the playlist.
+          return Response.json({
+            status: "ok",
+            solution: {
+              url: target,
+              status: 200,
+              response: "<html><body>book page not m3u</body></html>",
               cookies: [],
               userAgent: "Mozilla/5.0 (FlareSolverr Chrome)",
             },
@@ -591,7 +619,12 @@ describe("playlist audio fetch", () => {
     const result = await ensureAudioFromPlaylist(book(), target, config, fetcher);
     expect(result?.downloaded).toBe(1);
     expect(await readdir(target)).toContain("0001-a.mp3");
-    expect(flareRequests.some((r) => r.download === true)).toBe(true);
+    expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".m3u"))).toBe(
+      true,
+    );
+    expect(flareRequests.some((r) => r.download === true && String(r.url ?? "").includes(".mp3"))).toBe(
+      true,
+    );
     expect(flareRequests.some((r) => r.returnScreenshot === true)).toBe(false);
     expect(flareRequests.some((r) => String(r.url ?? "").includes(".m3u"))).toBe(true);
   });

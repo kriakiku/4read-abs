@@ -182,21 +182,57 @@ export class FlareSolverrClient {
 
   /**
    * Fetch a file inside FlareSolverr's browser via patched `download: true` (base64 bytes).
-   * Works for images, audio, and other binaries that Chrome can download.
+   * Works for images, audio, playlists, and other files that Chrome downloads rather than renders.
+   * Navigating to `.m3u` via plain `request.get` often leaves HTML in `solution.response`
+   * (previous page / empty document) — download mode is required for the real body.
    */
-  async fetchDownload(url: string): Promise<FlareFileResult | null> {
+  async fetchDownload(
+    url: string,
+    options: {
+      cookies?: StoredCookie[];
+      headers?: Record<string, string>;
+      /** Allow small text payloads (m3u playlists are often under 64 bytes of header + few URLs). */
+      minBytes?: number;
+    } = {},
+  ): Promise<FlareFileResult | null> {
+    const minBytes = options.minBytes ?? 64;
     try {
-      const downloaded = await this.requestGet(url, { download: true });
+      const extra: Record<string, unknown> = { download: true };
+      if (options.cookies?.length) {
+        extra.cookies = options.cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          ...(c.expires !== undefined ? { expires: c.expires } : {}),
+        }));
+      }
+      if (options.headers && Object.keys(options.headers).length > 0) {
+        extra.headers = options.headers;
+      }
+      log.info(`Chrome DOWNLOAD ${url}`);
+      const started = Date.now();
+      const downloaded = await this.requestGet(url, extra);
       const file = normaliseDownload(downloaded.solution?.download);
       if (downloaded.status === "ok" && file) {
         const bytes = decodeBase64(file.data);
-        if (bytes && bytes.length >= 64 && !looksLikeHtml(bytes)) {
+        const size = bytes?.length ?? 0;
+        log.info(
+          `Chrome DOWNLOAD done in ${Math.round((Date.now() - started) / 1000)}s → ${size} bytes` +
+            (file.mime ? ` (${file.mime})` : ""),
+        );
+        if (bytes && bytes.length >= minBytes && !looksLikeHtml(bytes)) {
           return {
             bytes,
             contentType: file.mime || sniffContentType(bytes) || "application/octet-stream",
             strategy: "download",
           };
         }
+        if (bytes && looksLikeHtml(bytes)) {
+          log.warn(`Chrome DOWNLOAD for ${url} returned HTML (${size} bytes), not a file`);
+        }
+      } else {
+        log.debug(
+          `Chrome DOWNLOAD unavailable for ${url}: ${downloaded.message ?? "no download payload"}`,
+        );
       }
     } catch (error) {
       log.debug(`FlareSolverr download mode unavailable: ${String(error)}`);

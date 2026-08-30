@@ -271,24 +271,48 @@ export function bookPageReferer(
 /**
  * Pull the player playlist URL from book HTML, e.g.
  * `new Playerjs({file:"https://4read.org/m33u2/5546-….m3u"})`.
+ * When `preferKey` is set (e.g. `2901-slug`), prefer a URL whose path contains that key
+ * so related-book embeds on the same page do not steal the match.
  */
-export function extractPlaylistUrlFromHtml(html: string, baseUrl?: string): string | null {
+export function extractPlaylistUrlFromHtml(
+  html: string,
+  baseUrl?: string,
+  preferKey?: string | null,
+): string | null {
   const patterns = [
-    /Playerjs\(\s*\{[^}]*\bfile\s*:\s*["']([^"']*m33u2[^"']+\.m3u[^"']*)["']/i,
-    /["'](https?:\/\/[^"']*\/m33u2\/[^"']+\.m3u[^"']*)["']/i,
-    /["'](\/m33u2\/[^"']+\.m3u[^"']*)["']/i,
+    /Playerjs\(\s*\{[^}]*\bfile\s*:\s*["']([^"']*m33u2[^"']+\.m3u[^"']*)["']/gi,
+    /["'](https?:\/\/[^"']*\/m33u2\/[^"']+\.m3u[^"']*)["']/gi,
+    /["'](\/m33u2\/[^"']+\.m3u[^"']*)["']/gi,
   ];
+  const found: string[] = [];
   for (const pattern of patterns) {
-    const match = pattern.exec(html);
-    const raw = match?.[1]?.trim();
-    if (!raw) continue;
-    try {
-      return new URL(raw, baseUrl ?? "https://4read.org/").href;
-    } catch {
-      continue;
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(html)) !== null) {
+      const raw = match[1]?.trim();
+      if (!raw) continue;
+      try {
+        const href = new URL(raw, baseUrl ?? "https://4read.org/").href;
+        if (!found.includes(href)) found.push(href);
+      } catch {
+        // skip
+      }
     }
+    if (found.length) break; // Prefer Playerjs matches over loose URL scans.
   }
-  return null;
+  if (found.length === 0) return null;
+  if (preferKey) {
+    const needle = preferKey.toLowerCase();
+    const preferred = found.find((url) => {
+      try {
+        return decodeURIComponent(new URL(url).pathname).toLowerCase().includes(needle);
+      } catch {
+        return url.toLowerCase().includes(needle);
+      }
+    });
+    if (preferred) return preferred;
+  }
+  return found[0] ?? null;
 }
 
 interface HarLike {
@@ -397,7 +421,8 @@ export async function ensureAudioFromPlaylist(
       );
     }
     if (!body && page?.body) {
-      const fromHtml = extractPlaylistUrlFromHtml(page.body, config.source.baseUrl);
+      const preferKey = playlistKeyFor(book);
+      const fromHtml = extractPlaylistUrlFromHtml(page.body, config.source.baseUrl, preferKey);
       if (fromHtml) {
         playlistUrl = fromHtml;
         discovery = "playerjs";
@@ -429,15 +454,15 @@ export async function ensureAudioFromPlaylist(
     }
     try {
       log.info(
-        `audio: fetching playlist via Chrome (source=${discovery ?? "unknown"}) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
+        `audio: fetching playlist via Chrome download (source=${discovery ?? "unknown"}) for ${book.source_id} → m3u=${playlistUrl} page=${referer}`,
       );
-      const text = await fetcher.getText(playlistUrl, {
-        purpose: "playlist",
-        chrome: true,
-        accept: "*/*",
-        referer,
-      });
+      const text = await fetcher.getPlaylistText(playlistUrl, { referer });
       body = extractPlaylistBody(text.body);
+      if (!body) {
+        log.warn(
+          `playlist body not M3U after fetch (source=${discovery ?? "unknown"}) bytes=${text.body.length} head=${JSON.stringify(text.body.trim().slice(0, 80))} m3u=${playlistUrl} page=${referer}`,
+        );
+      }
     } catch (error) {
       log.warn(
         `playlist fetch failed for ${book.slug} (source=${discovery ?? "unknown"}) m3u=${playlistUrl} page=${referer}: ${String(error)}`,
