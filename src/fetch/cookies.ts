@@ -119,22 +119,6 @@ export class CookieJar {
     return [...this.cookies.values()].map((c) => `${c.name}=${c.value}`).join("; ");
   }
 
-  /**
-   * Append a book id to the DLE `viewed_ids` cookie (comma-separated). The playlist endpoint
-   * expects the article id to already be marked as viewed.
-   */
-  appendViewedId(sourceId: number): void {
-    if (!Number.isFinite(sourceId) || sourceId <= 0) return;
-    const id = String(Math.trunc(sourceId));
-    const existing = this.cookies.get("viewed_ids")?.value ?? "";
-    const ids = existing
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0);
-    if (!ids.includes(id)) ids.push(id);
-    this.set([{ name: "viewed_ids", value: ids.join(",") }]);
-  }
-
   /** Snapshot for FlareSolverr `cookies` payloads. */
   list(): StoredCookie[] {
     this.dropExpired();

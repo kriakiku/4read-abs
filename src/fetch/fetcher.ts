@@ -145,18 +145,15 @@ export class Fetcher {
   }
 
   /**
-   * Make sure the jar has a PHPSESSID from 4read before playlist/media calls.
-   * Hits `pageUrl` (article page) once when missing; soft-fails so audio can still try.
+   * Hit the article HTML page so the jar picks up whatever Set-Cookie 4read sends
+   * (PHPSESSID, viewed_ids, …). Always runs before an m3u fetch — we do not synthesise cookies.
    */
-  async ensurePhpSession(pageUrl: string): Promise<boolean> {
-    if (this.jar.phpSessionId()) return true;
+  async warmBookPage(pageUrl: string): Promise<void> {
     try {
       await this.getText(pageUrl);
     } catch (error) {
-      log.debug(`PHPSESSID warm-up failed for ${pageUrl}: ${String(error)}`);
-      return Boolean(this.jar.phpSessionId());
+      log.debug(`book page warm-up failed for ${pageUrl}: ${String(error)}`);
     }
-    return Boolean(this.jar.phpSessionId());
   }
 
   /**
@@ -227,8 +224,7 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
-      // Always forward the jar (cf_clearance, PHPSESSID, viewed_ids, …) and merge whatever
-      // Chrome returns so PHPSESSID survives across playlist fetches.
+      // Forward the full jar (whatever 4read Set-Cookie last gave us) and merge Chrome's cookies back.
       const result = await this.flare.get(url, {
         cookies: this.jar.list(),
         headers: flareHeadersFrom(headers),
