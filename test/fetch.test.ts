@@ -190,7 +190,7 @@ describe("cookie jar", () => {
     const filtered = flareHeadersFrom({
       accept: "*/*",
       "accept-language": "uk",
-      referer: "https://4read.org/x.html",
+      referer: "https://4read.org/3130-yudkovski-elizer-garri-potter-i-metody-racionalnosty-t-2.html",
       "sec-fetch-dest": "document",
       "sec-fetch-mode": "navigate",
       "sec-fetch-site": "same-origin",
@@ -202,7 +202,7 @@ describe("cookie jar", () => {
     expect(filtered).toEqual({
       accept: "*/*",
       "accept-language": "uk",
-      referer: "https://4read.org/x.html",
+      referer: "https://4read.org/3130-yudkovski-elizer-garri-potter-i-metody-racionalnosty-t-2.html",
     });
   });
 
