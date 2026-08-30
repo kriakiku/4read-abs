@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { configSchema, type Config } from "../src/config.ts";
 import { openDb, type Db } from "../src/db.ts";
 import { CookieJar } from "../src/fetch/cookies.ts";
-import { ChallengeError, CooldownError, Fetcher } from "../src/fetch/fetcher.ts";
+import { ChallengeError, CooldownError, Fetcher, flareHeadersFrom } from "../src/fetch/fetcher.ts";
 import { AdaptiveLimiter } from "../src/fetch/limiter.ts";
 
 /** The interstitial 4read.org serves to non-browser clients. */
@@ -184,6 +184,26 @@ describe("cookie jar", () => {
     jar.absorbSetCookie(headers);
     expect(jar.header()).toContain("a=1");
     expect(jar.header()).toContain("b=2");
+  });
+
+  test("flareHeadersFrom strips sec-fetch-* (rejected by flaresolverr-go)", () => {
+    const filtered = flareHeadersFrom({
+      accept: "*/*",
+      "accept-language": "uk",
+      referer: "https://4read.org/x.html",
+      "sec-fetch-dest": "document",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-user": "?1",
+      "user-agent": "Mozilla/5.0",
+      cookie: "a=1",
+      "upgrade-insecure-requests": "1",
+    });
+    expect(filtered).toEqual({
+      accept: "*/*",
+      "accept-language": "uk",
+      referer: "https://4read.org/x.html",
+    });
   });
 
   test("PHPSESSID is kept across restarts and empty Flare dumps", async () => {

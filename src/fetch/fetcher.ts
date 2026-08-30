@@ -532,16 +532,28 @@ export class Fetcher {
   }
 }
 
-/** Headers FlareSolverr will forward; skip Cookie (passed separately) and hop-by-hop noise. */
-function flareHeadersFrom(headers: Record<string, string>): Record<string, string> {
+/**
+ * Headers FlareSolverr / flaresolverr-go will forward into Chrome.
+ * Go's net/http (flaresolverr-go) rejects forbidden names like `sec-fetch-*`;
+ * Cookie/Host are passed separately. Keep an allowlist of safe browser hints.
+ */
+export function flareHeadersFrom(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     const lower = key.toLowerCase();
-    if (lower === "cookie" || lower === "host" || lower === "content-length") continue;
+    if (!FLARE_HEADER_ALLOW.has(lower)) continue;
     out[key] = value;
   }
   return out;
 }
+
+/** Only headers flaresolverr-go accepts on request.get (no sec-fetch-*, Cookie, Host, …). */
+const FLARE_HEADER_ALLOW = new Set([
+  "accept",
+  "accept-language",
+  "referer",
+  "accept-encoding",
+]);
 
 /** In-page fetch of the m3u while still on the book origin (CF already cleared). */
 export function playlistFetchExecuteJs(playlistUrl: string): string {
