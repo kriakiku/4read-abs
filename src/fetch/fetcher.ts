@@ -461,7 +461,11 @@ export class Fetcher {
       return { url, status: response.status, bytes, contentType };
     };
 
-    const flareFirst = this.preferFlareFirst() || this.limiter.inCooldown();
+    const flareFirst =
+      this.preferFlareFirst() ||
+      this.limiter.inCooldown() ||
+      // CDN mp3s need Chrome Referer; Bun timeouts just waste ~requestTimeoutMs.
+      (purpose === "media" && this.flareConfigured);
 
     if (!flareFirst) {
       try {
@@ -476,7 +480,6 @@ export class Fetcher {
         if (error instanceof CooldownError) throw error;
         log.debug(`direct binary fetch failed (${String(error)}), trying FlareSolverr browser`);
         // Timeouts / network blips on CDN hosts must not freeze Bun→origin for 30m.
-        // Only Cloudflare-style failures should flip preferFlareFirst.
         const text = String(error);
         if (!/TimeoutError|timed out|ECONNRESET|ENOTFOUND|fetch failed/i.test(text)) {
           if (this.flareConfigured) this.blockDirectProbes(`direct ${purpose} fetch error`);
@@ -489,14 +492,28 @@ export class Fetcher {
     await this.limiter.acquire({ ignoreCooldown: true });
     const started = Bun.nanoseconds();
     try {
-      // Audio must not fall back to a PNG screenshot of the URL.
-      const file =
-        purpose === "media"
-          ? await this.flare.fetchDownload(url, {
-              cookies: this.jar.list(),
-              headers: flareHeadersFrom(this.browserHeaders({ referer: options.referer, purpose: "playlist" })),
-            })
-          : await this.flare.fetchImage(url);
+      let file: Awaited<ReturnType<FlareSolverrClient["fetchDownload"]>> = null;
+      if (purpose === "media") {
+        const pageUrl = options.referer;
+        const canExecuteFromPage =
+          Boolean(pageUrl) && /^https?:\/\//i.test(pageUrl!) && !/\.m3u(\?|$)/i.test(pageUrl!);
+        // Prefer in-page fetch so Chrome sends Referer (reasd.org hotlink-protects otherwise).
+        if (canExecuteFromPage) {
+          file = await this.flare.fetchViaPageExecuteJs(pageUrl!, url, {
+            cookies: this.jar.list(),
+            minBytes: this.config.audio.minFileBytes,
+          });
+        }
+        if (!file) {
+          file = await this.flare.fetchDownload(url, {
+            cookies: this.jar.list(),
+            headers: flareHeadersFrom(this.browserHeaders({ purpose: "playlist" })),
+            minBytes: this.config.audio.minFileBytes,
+          });
+        }
+      } else {
+        file = await this.flare.fetchImage(url);
+      }
       const ms = (Bun.nanoseconds() - started) / 1e6;
       if (!file) {
         this.limiter.recordChallenge();
@@ -505,7 +522,7 @@ export class Fetcher {
       }
       this.limiter.recordSuccess();
       this.record(url, "flaresolverr", 200, true, false, ms, file.strategy);
-      log.debug(`binary fetched via FlareSolverr ${file.strategy} (${file.bytes.length} bytes)`);
+      log.info(`binary via FlareSolverr ${file.strategy} (${file.bytes.length} bytes) ${url}`);
       return { url, status: 200, bytes: file.bytes, contentType: file.contentType };
     } catch (error) {
       const ms = (Bun.nanoseconds() - started) / 1e6;

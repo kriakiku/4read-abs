@@ -250,8 +250,10 @@ export class FlareSolverrClient {
       const size = bytes?.length ?? 0;
       if (downloaded.status === "ok" && bytes) {
         log.info(`Chrome DOWNLOAD done in ${Math.round((Date.now() - started) / 1000)}s → ${size} bytes`);
+        // A base64/download payload means the build supports download — even if the site
+        // returned an HTML error page (missing Referer / hotlink). Do not disable the mode.
+        this.downloadSupported = true;
         if (bytes.length >= minBytes && !looksLikeHtml(bytes)) {
-          this.downloadSupported = true;
           return {
             bytes,
             contentType: sniffContentType(bytes) || "application/octet-stream",
@@ -259,7 +261,10 @@ export class FlareSolverrClient {
           };
         }
         if (looksLikeHtml(bytes)) {
-          log.warn(`Chrome DOWNLOAD for ${url} returned HTML (${size} bytes), not a file`);
+          const head = new TextDecoder().decode(bytes.slice(0, 120)).replace(/\s+/g, " ");
+          log.warn(
+            `Chrome DOWNLOAD for ${url} returned HTML (${size} bytes), not a file — head=${JSON.stringify(head)}`,
+          );
         }
       } else {
         const message = downloaded.message ?? "no download payload";
@@ -269,13 +274,12 @@ export class FlareSolverrClient {
           log.warn(`Chrome DOWNLOAD rejected our headers (${message}); retry without forbidden names`);
           return null;
         }
-      }
-      // ok + HTML / empty payload → stock FlareSolverr (v2 removed download).
-      if (this.downloadSupported === null) {
-        this.downloadSupported = false;
-        log.warn(
-          "FlareSolverr download:true returned no file payload — disabling download mode (stock FlareSolverr v2?). Prefer flaresolverr-go (see docker-compose) or a build with executeJs/download.",
-        );
+        if (this.downloadSupported === null) {
+          this.downloadSupported = false;
+          log.warn(
+            "FlareSolverr download:true returned no file payload — disabling download mode (stock FlareSolverr v2?). Prefer flaresolverr-go (see docker-compose) or a build with executeJs/download.",
+          );
+        }
       }
     } catch (error) {
       const text = String(error);
@@ -284,6 +288,63 @@ export class FlareSolverrClient {
       if (this.downloadSupported === null) this.downloadSupported = false;
     }
     return null;
+  }
+
+  /**
+   * Load `pageUrl` in Chrome, then `fetch(fileUrl)` in-page so the browser sends a real
+   * Referer (flaresolverr-go cannot set the Referer header). Returns file bytes as base64
+   * via executeJsResult — used for CDN mp3s that hotlink-protect without a document Referer.
+   */
+  async fetchViaPageExecuteJs(
+    pageUrl: string,
+    fileUrl: string,
+    options: { cookies?: StoredCookie[]; minBytes?: number } = {},
+  ): Promise<FlareFileResult | null> {
+    const minBytes = options.minBytes ?? 64;
+    try {
+      log.info(`Chrome executeJs fetch ${fileUrl} (from ${pageUrl})`);
+      const started = Date.now();
+      const extra: Record<string, unknown> = {
+        executeJs: mediaFetchExecuteJs(fileUrl),
+        waitInSeconds: 1,
+      };
+      if (options.cookies?.length) {
+        extra.cookies = options.cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          ...(c.expires !== undefined ? { expires: c.expires } : {}),
+        }));
+      }
+      const result = await this.requestGet(pageUrl, extra);
+      if (result.status !== "ok" || !result.solution) {
+        log.debug(`executeJs fetch failed: ${result.message ?? "no solution"}`);
+        return null;
+      }
+      const raw = result.solution.executeJsResult?.trim() ?? "";
+      if (!raw || raw.startsWith("Error:")) {
+        log.warn(`executeJs fetch returned no bytes for ${fileUrl}: ${raw.slice(0, 160)}`);
+        return null;
+      }
+      const payload = safeJsonString(raw) ?? raw;
+      const decoded = decodeBase64(payload);
+      if (!decoded || decoded.length < minBytes || looksLikeHtml(decoded)) {
+        log.warn(
+          `executeJs fetch for ${fileUrl} not usable (${decoded?.length ?? 0} bytes) in ${Math.round((Date.now() - started) / 1000)}s`,
+        );
+        return null;
+      }
+      log.info(
+        `Chrome executeJs fetch done in ${Math.round((Date.now() - started) / 1000)}s → ${decoded.length} bytes`,
+      );
+      return {
+        bytes: decoded,
+        contentType: sniffContentType(decoded) || "application/octet-stream",
+        strategy: "download",
+      };
+    } catch (error) {
+      log.debug(`executeJs media fetch failed: ${String(error)}`);
+      return null;
+    }
   }
 
   /**
@@ -330,6 +391,28 @@ function extractDownloadBytes(solution: FlareSolution | undefined): Uint8Array |
     return decodeBase64(solution.response);
   }
   return null;
+}
+
+/** In-page fetch of a media URL; browser sends Referer automatically. Returns base64. */
+function mediaFetchExecuteJs(fileUrl: string): string {
+  return `return fetch(${JSON.stringify(fileUrl)},{credentials:"include"}).then(function(r){
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.arrayBuffer();
+}).then(function(ab){
+  var u=new Uint8Array(ab), s="", i=0, n=0x8000;
+  for(;i<u.length;i+=n){s+=String.fromCharCode.apply(null,u.subarray(i,Math.min(i+n,u.length)));}
+  return btoa(s);
+}).catch(function(e){return "Error:"+String(e&&e.message||e);})`;
+}
+
+function safeJsonString(raw: string): string | null {
+  if (!(raw.startsWith('"') && raw.endsWith('"'))) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function normaliseDownload(

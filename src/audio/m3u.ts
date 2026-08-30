@@ -515,7 +515,8 @@ export async function ensureAudioFromPlaylist(
     }
     try {
       const binary = await fetcher.getBinary(track.url, {
-        referer: playlistUrl,
+        // Book HTML — CDN hotlink checks Referer; m3u URL is wrong here.
+        referer,
         purpose: "media",
       });
       if (binary.bytes.length < config.audio.minFileBytes) {
