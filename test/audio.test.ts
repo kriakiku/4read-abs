@@ -237,6 +237,14 @@ https://cdn.example/c.mp3
     );
   });
 
+  test("extractPlaylistUrlFromHtml matches by id when page slug ≠ m3u slug", () => {
+    // Live case: /4383-garris-tomas-chervonyj-drakon.html vs Playerjs …/4383-tomas-garris-….m3u
+    const html = `<script src="/engine/modules/playerjs/playerjs6.js" type="text/javascript"></script><div id="playerjs1" style="width:100%;height:px"></div><script>var playerjs1 = new Playerjs({id:"playerjs1",file:"https://4read.org/m33u2/4383-tomas-garris-chervonyj-drakon.m3u"});</script>`;
+    expect(
+      extractPlaylistUrlFromHtml(html, "https://4read.org", "4383-garris-tomas-chervonyj-drakon"),
+    ).toBe("https://4read.org/m33u2/4383-tomas-garris-chervonyj-drakon.m3u");
+  });
+
   test("extractPlaylistUrlFromHtml returns null when preferKey matches nothing", () => {
     const html = `<script>new Playerjs({file:"https://4read.org/m33u2/3130-other.m3u"});</script>`;
     expect(extractPlaylistUrlFromHtml(html, undefined, "2901-wanted")).toBeNull();
