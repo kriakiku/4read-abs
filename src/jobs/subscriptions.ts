@@ -57,8 +57,7 @@ export async function refreshQueue(ctx: AppContext, options: { crawlFacets?: boo
     alreadyQueued: 0,
   };
 
-  // Pulling the facet listing first makes sure newly published volumes are known even when
-  // the sitemap has not been re-read yet.
+  // Pulling the facet listing first makes sure newly published volumes are known.
   if (options.crawlFacets) {
     for (const subscription of enabled) {
       const kind =

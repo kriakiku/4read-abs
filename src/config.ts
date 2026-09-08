@@ -130,11 +130,10 @@ export const configSchema = z.object({
 
   schedule: z
     .object({
-      /** Sitemap poll interval. Zero disables the timer. */
+      /** Subscription facet refresh interval. Zero disables the timer. */
       incrementalMinutes: z.number().int().min(0).default(60),
       /**
        * Slowly fetch detail pages for subscription matches and queued books only.
-       * The full sitemap catalogue is never detail-crawled.
        */
       backfillEnabled: z.boolean().default(true),
       backfillBatch: z.number().int().min(0).default(25),

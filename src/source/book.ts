@@ -112,7 +112,7 @@ function uniqueByKey(refs: NamedRef[]): NamedRef[] {
 
 /**
  * Parse a book article page. Returns null for pages that are not books (the site's blog
- * posts share the same URL shape and appear in the sitemap).
+ * posts share the same URL shape).
  */
 export function parseBookPage(html: string, pageUrl: string, base = DEFAULT_BASE_URL): ParsedBook | null {
   const $ = cheerio.load(html);

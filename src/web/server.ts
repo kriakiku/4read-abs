@@ -10,7 +10,7 @@ import { buildSidecar } from "../abs/metadata.ts";
 import { stageBook } from "../abs/stage.ts";
 import { getMeta } from "../db.ts";
 import { recentLogs } from "../log.ts";
-import { backfillDetails, seedEntities, syncSitemap } from "../jobs/crawl.ts";
+import { backfillDetails, seedEntities } from "../jobs/crawl.ts";
 import { listQueue, queueCounts, refreshQueue, setQueueState, deleteQueueEntry } from "../jobs/subscriptions.ts";
 import { prepareAcceptedBook, syncLibrary } from "../jobs/sync.ts";
 import { logger } from "../log.ts";
@@ -20,7 +20,7 @@ const log = logger("web");
 
 const indexHtml = indexHtmlAsset as unknown as string;
 
-const JOBS = ["seed", "sitemap", "backfill", "subscriptions", "sync"] as const;
+const JOBS = ["seed", "backfill", "subscriptions", "sync"] as const;
 type JobName = (typeof JOBS)[number];
 
 export function createApp(ctx: AppContext): Hono {
@@ -38,7 +38,8 @@ export function createApp(ctx: AppContext): Hono {
       queue: queueCounts(ctx),
       timestamps: {
         seededAt: getMeta(ctx.db, "seeded_at"),
-        sitemapSyncedAt: getMeta(ctx.db, "sitemap_synced_at"),
+        subscriptionsSyncedAt:
+          getMeta(ctx.db, "subscriptions_synced_at") ?? getMeta(ctx.db, "sitemap_synced_at"),
         backfillRanAt: getMeta(ctx.db, "backfill_ran_at"),
         syncRanAt: getMeta(ctx.db, "sync_ran_at"),
       },
@@ -185,8 +186,6 @@ export function createApp(ctx: AppContext): Hono {
       switch (name) {
         case "seed":
           return seedEntities(ctx);
-        case "sitemap":
-          return syncSitemap(ctx);
         case "backfill":
           return backfillDetails(ctx, Math.max(1, ctx.config.schedule.backfillBatch));
         case "subscriptions":

@@ -1,6 +1,6 @@
 import { AppContext } from "./context.ts";
 import { logger } from "./log.ts";
-import { backfillDetails, seedEntities, syncSitemap } from "./jobs/crawl.ts";
+import { backfillDetails, seedEntities } from "./jobs/crawl.ts";
 import { Scheduler } from "./jobs/scheduler.ts";
 import { refreshQueue } from "./jobs/subscriptions.ts";
 import { syncLibrary } from "./jobs/sync.ts";
@@ -14,11 +14,10 @@ const USAGE = `4read-abs - 4read.org audiobook metadata for Audiobookshelf
 Usage:
   4read-abs [serve]        Start the web UI and the scheduler (default)
   4read-abs seed           Fetch the author and narrator indexes
-  4read-abs sitemap        Reconcile the catalogue with the site's sitemap
   4read-abs backfill [n]   Fetch up to n pending detail pages (default: config value)
   4read-abs subscriptions  Re-evaluate subscriptions and refill the news queue
   4read-abs sync           Write sidecars into the Audiobookshelf library
-  4read-abs once           sitemap, then subscriptions, then sync
+  4read-abs once           subscriptions (facet crawl), then sync
   4read-abs --version      Print the version
 
 Environment:
@@ -90,9 +89,6 @@ async function main(): Promise<void> {
       case "seed":
         console.log(JSON.stringify(await seedEntities(ctx), null, 2));
         break;
-      case "sitemap":
-        console.log(JSON.stringify(await syncSitemap(ctx), null, 2));
-        break;
       case "backfill": {
         const limit = Number.parseInt(rest[0] ?? "", 10);
         const batch = Number.isFinite(limit) ? limit : ctx.config.schedule.backfillBatch;
@@ -110,7 +106,6 @@ async function main(): Promise<void> {
         break;
       }
       case "once": {
-        await syncSitemap(ctx);
         await refreshQueue(ctx, { crawlFacets: true });
         if (ctx.abs.configured) {
           const result = await syncLibrary(ctx);
