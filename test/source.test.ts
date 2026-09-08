@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { parseBookPage } from "../src/source/book.ts";
 import { parseListingPage } from "../src/source/listing.ts";
 import { parseEntityIndex } from "../src/source/indexes.ts";
-import { parseBookSitemap, parseSitemapIndex, isArticleSitemapUrl } from "../src/source/sitemap.ts";
 import {
   parseBookUrl,
   parseCategoryKey,
@@ -169,37 +168,5 @@ describe("entity indexes", () => {
     const rogovtseva = entries.find((entry) => entry.key === "ада роговцева");
     expect(rogovtseva?.name).toBe("Ада Роговцева");
     expect(rogovtseva?.bookCount).toBe(23);
-  });
-});
-
-describe("sitemap", () => {
-  test("lists the child sitemaps", async () => {
-    const children = parseSitemapIndex(await fixture("sitemap-index.xml"));
-    expect(children).toContain("https://4read.org/news_pages.xml");
-    expect(children.length).toBe(4);
-  });
-
-  test("keeps only the article news sitemap from the index", async () => {
-    const children = parseSitemapIndex(await fixture("sitemap-index.xml")).filter(isArticleSitemapUrl);
-    expect(children).toEqual(["https://4read.org/news_pages.xml"]);
-  });
-
-  test("extracts article urls with lastmod", async () => {
-    const entries = parseBookSitemap(await fixture("sitemap-news.xml"));
-    expect(entries.length).toBeGreaterThan(20);
-
-    const newest = entries.find((entry) => entry.sourceId === 8176);
-    expect(newest?.lastmod).toBe("2026-08-29T13:19:30+03:00");
-    expect(newest?.slug).toBe("ocheret-drug-mij-virnij-samokat");
-  });
-
-  test("keeps the newest lastmod when an id repeats", () => {
-    const xml = `<urlset>
-      <url><loc>https://4read.org/1-a.html</loc><lastmod>2024-01-01T00:00:00+00:00</lastmod></url>
-      <url><loc>https://4read.org/1-a.html</loc><lastmod>2025-01-01T00:00:00+00:00</lastmod></url>
-    </urlset>`;
-    const entries = parseBookSitemap(xml);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]!.lastmod).toBe("2025-01-01T00:00:00+00:00");
   });
 });

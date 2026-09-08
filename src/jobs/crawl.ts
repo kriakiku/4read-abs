@@ -4,14 +4,12 @@ import { getMeta, setMeta } from "../db.ts";
 import { parseBookPage } from "../source/book.ts";
 import { parseEntityIndex } from "../source/indexes.ts";
 import { parseListingPage } from "../source/listing.ts";
-import { parseBookSitemap, parseSitemapIndex, isArticleSitemapUrl, sitemapIndexUrl } from "../source/sitemap.ts";
 import { bookUrl, xfsearchUrl } from "../source/urls.ts";
 import {
   booksNeedingDetailForSubscriptions,
   markBookState,
   recordBookDetail,
   recordListingCard,
-  recordSitemapEntry,
   upsertAuthor,
   upsertNarrator,
 } from "../catalog/store.ts";
@@ -49,48 +47,6 @@ export async function seedEntities(ctx: AppContext): Promise<SeedResult> {
   return result;
 }
 
-export interface SitemapResult {
-  total: number;
-  added: number;
-  stale: number;
-}
-
-/**
- * Walk the sitemap and reconcile it with the local catalogue. Every entry carries a `lastmod`,
- * so only genuinely changed pages get queued for a refetch.
- */
-export async function syncSitemap(ctx: AppContext): Promise<SitemapResult> {
-  const base = ctx.config.source.baseUrl;
-  const indexUrl = sitemapIndexUrl(base);
-  log.info(`fetching sitemap index ${indexUrl}`);
-  const index = await ctx.fetcher.getText(indexUrl);
-  const children = parseSitemapIndex(index.body).filter(isArticleSitemapUrl);
-  const targets = children.length > 0 ? children : [`${base}/news_pages.xml`];
-  log.info(`sitemap index → ${targets.length} article sitemap(s): ${targets.join(", ")}`);
-
-  const result: SitemapResult = { total: 0, added: 0, stale: 0 };
-
-  for (const target of targets) {
-    log.info(`fetching article sitemap ${target}`);
-    const page = await ctx.fetcher.getText(target);
-    log.info(`parsed ${target} (${page.body.length} bytes, via ${page.strategy})`);
-    const entries = parseBookSitemap(page.body, base);
-    const apply = ctx.db.transaction(() => {
-      for (const entry of entries) {
-        const outcome = recordSitemapEntry(ctx.db, entry);
-        result.total += 1;
-        if (outcome === "new") result.added += 1;
-        if (outcome === "stale") result.stale += 1;
-      }
-    });
-    apply();
-  }
-
-  setMeta(ctx.db, "sitemap_synced_at", new Date().toISOString());
-  log.info(`sitemap: ${result.total} entries, ${result.added} new, ${result.stale} changed`);
-  return result;
-}
-
 /** Fetch and store one book detail page. Blog posts share the URL shape and are marked skipped. */
 export async function fetchBookDetail(ctx: AppContext, sourceId: number, url?: string): Promise<"ok" | "skipped"> {
   const row = ctx.db
@@ -111,7 +67,7 @@ export async function fetchBookDetail(ctx: AppContext, sourceId: number, url?: s
   recordBookDetail(ctx.db, parsed, { lastmod: row?.lastmod ?? null });
 
   // Sibling volumes linked from the description are usually not discoverable any other way
-  // until the sitemap catches up, so register them as pending.
+  // until a facet listing catches them, so register them as pending.
   for (const relatedId of parsed.relatedBookIds) {
     const known = ctx.db
       .query<{ source_id: number }, [number]>("select source_id from books where source_id = ?")
@@ -139,7 +95,7 @@ export interface BackfillResult {
 
 /**
  * Slowly fetch detail pages for subscription matches and queued books only.
- * Never walks the whole sitemap catalogue. Stops early if the source pushes back.
+ * Stops early if the source pushes back.
  */
 export async function backfillDetails(ctx: AppContext, limit: number): Promise<BackfillResult> {
   const result: BackfillResult = { attempted: 0, ok: 0, skipped: 0, failed: 0, stoppedEarly: false };
@@ -195,7 +151,7 @@ export async function backfillDetails(ctx: AppContext, limit: number): Promise<B
 /**
  * Walk a facet listing (a series, narrator or author page) and register every book on it.
  * One request covers up to ~24 books, which is far cheaper than visiting each detail page,
- * and it is how a subscription discovers volumes the sitemap has not surfaced yet.
+ * and it is how a subscription discovers new volumes.
  * Books are linked to the facet immediately so the queue can fill without a detail crawl.
  */
 export async function crawlFacet(
@@ -233,9 +189,6 @@ export async function crawlFacet(
     if (listing.cards.length === 0) break;
   }
 
+  log.info(`facet ${kind}:${facetKey} → ${cards} card(s) across ${pages} page(s)`);
   return { pages, cards };
-}
-
-export function lastSitemapSync(ctx: AppContext): string | null {
-  return getMeta(ctx.db, "sitemap_synced_at");
 }

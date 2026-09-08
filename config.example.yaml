@@ -98,7 +98,7 @@ subscriptions: []
 #    enabled: false
 
 schedule:
-  # Sitemap poll interval in minutes; 0 disables it.
+  # How often to re-crawl subscription facets and refill the queue; 0 disables it.
   incrementalMinutes: 60
   backfillEnabled: true
   # Detail pages per tick — only for subscription matches and the news queue.

@@ -1,13 +1,14 @@
 import type { AppContext } from "../context.ts";
 import { getMeta, pruneFetchLog, setMeta } from "../db.ts";
 import { logger } from "../log.ts";
-import { backfillDetails, seedEntities, syncSitemap } from "./crawl.ts";
+import { backfillDetails, seedEntities } from "./crawl.ts";
 import { refreshQueue } from "./subscriptions.ts";
 import { syncLibrary } from "./sync.ts";
 
 const log = logger("scheduler");
 
 const MINUTE = 60_000;
+const SUBSCRIPTIONS_META = "subscriptions_synced_at";
 
 function minutesSince(iso: string | null): number {
   if (!iso) return Number.POSITIVE_INFINITY;
@@ -66,16 +67,17 @@ export class Scheduler {
       });
     }
 
-    if (schedule.incrementalMinutes > 0 && minutesSince(getMeta(ctx.db, "sitemap_synced_at")) >= schedule.incrementalMinutes) {
-      log.info("due: sitemap + subscriptions");
-      await ctx.runJob("sitemap", () => syncSitemap(ctx)).catch((error) => {
-        log.warn(`sitemap sync failed: ${String(error)}`);
-        return null;
-      });
+    if (
+      schedule.incrementalMinutes > 0 &&
+      minutesSince(getMeta(ctx.db, SUBSCRIPTIONS_META) ?? getMeta(ctx.db, "sitemap_synced_at")) >=
+        schedule.incrementalMinutes
+    ) {
+      log.info("due: subscriptions (facet crawl)");
       await ctx.runJob("subscriptions", () => refreshQueue(ctx, { crawlFacets: true })).catch((error) => {
         log.warn(`subscription refresh failed: ${String(error)}`);
         return null;
       });
+      setMeta(ctx.db, SUBSCRIPTIONS_META, new Date().toISOString());
     }
 
     // Cooldown only blocks Bun→origin probes. With FlareSolverr configured, backfill can continue.

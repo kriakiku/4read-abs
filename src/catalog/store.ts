@@ -2,7 +2,6 @@ import { nowIso, type Db } from "../db.ts";
 import type { ParsedBook } from "../source/book.ts";
 import type { ListingCard } from "../source/listing.ts";
 import type { IndexEntry } from "../source/indexes.ts";
-import type { SitemapBookEntry } from "../source/sitemap.ts";
 import { workIdentity } from "./normalize.ts";
 
 export interface BookRow {
@@ -76,39 +75,6 @@ export function upsertGenre(db: Db, entry: { key: string; name: string }): void 
     `insert into genres (key, name) values (?, ?)
      on conflict(key) do update set name = excluded.name`,
   ).run(entry.key, entry.name);
-}
-
-/**
- * Record a URL seen in the sitemap. Existing rows only get their `lastmod` bumped, and a
- * newer `lastmod` marks the detail page for a refetch.
- */
-export function recordSitemapEntry(db: Db, entry: SitemapBookEntry): "new" | "stale" | "unchanged" {
-  const existing = db
-    .query<{ lastmod: string | null; fetched_at: string | null; detail_state: string }, [number]>(
-      "select lastmod, fetched_at, detail_state from books where source_id = ?",
-    )
-    .get(entry.sourceId);
-
-  if (!existing) {
-    db.query(
-      `insert into books (source_id, url, slug, title, lastmod, first_seen_at, detail_state)
-       values (?, ?, ?, '', ?, ?, 'pending')`,
-    ).run(entry.sourceId, entry.loc, entry.slug, entry.lastmod, nowIso());
-    return "new";
-  }
-
-  const isNewer = entry.lastmod !== null && (existing.lastmod === null || entry.lastmod > existing.lastmod);
-  const neverFetched = existing.fetched_at === null;
-
-  if (isNewer || (neverFetched && existing.detail_state === "ok")) {
-    db.query(
-      "update books set url = ?, slug = ?, lastmod = ?, detail_state = 'pending' where source_id = ?",
-    ).run(entry.loc, entry.slug, entry.lastmod, entry.sourceId);
-    return "stale";
-  }
-
-  db.query("update books set url = ?, slug = ? where source_id = ?").run(entry.loc, entry.slug, entry.sourceId);
-  return "unchanged";
 }
 
 /** Which xfsearch facet a listing card was discovered on, if any. */
@@ -334,7 +300,7 @@ export function withPeople(db: Db, row: BookRow): BookWithPeople {
 
 /**
  * Pending detail pages for books that match a subscription or sit in the news queue.
- * Unrelated sitemap entries are never selected.
+ * Unrelated catalogue entries outside subscriptions/queue are never selected.
  */
 export function booksNeedingDetailForSubscriptions(
   db: Db,

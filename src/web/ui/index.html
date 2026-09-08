@@ -295,7 +295,6 @@
           <div class="cards" id="status-cards"></div>
           <div class="row" style="margin-top: 16px">
             <button data-job="seed">Seed authors / narrators</button>
-            <button data-job="sitemap">Sync sitemap</button>
             <button data-job="backfill">Fetch details</button>
             <button data-job="subscriptions">Check subscriptions</button>
             <button data-job="sync" class="primary">Sync with ABS</button>
@@ -441,7 +440,7 @@
         const cards = $("status-cards");
         cards.replaceChildren();
         cards.append(card("Books in catalogue", status.catalog.books, `${status.catalog.booksDetailed} with details`));
-        cards.append(card("Detail backlog", status.catalog.booksPending, `sitemap: ${ago(status.timestamps.sitemapSyncedAt)}`));
+        cards.append(card("Detail backlog", status.catalog.booksPending, `subs: ${ago(status.timestamps.subscriptionsSyncedAt)}`));
         cards.append(card("Authors", status.catalog.authors, `${status.catalog.series} series`));
         cards.append(card("Narrators", status.catalog.narrators, `${status.preferredNarrators.length} preferred`));
         cards.append(
