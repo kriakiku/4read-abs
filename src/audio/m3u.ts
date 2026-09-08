@@ -380,21 +380,36 @@ export function bookPageReferer(
   return bookUrl(book.source_id, book.slug, base);
 }
 
+/** Pathname of a playlist URL, lowercased and decoded when possible. */
+function playlistPath(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname).toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
 /**
  * Pull the player playlist URL from book HTML, e.g.
  * `new Playerjs({file:"https://4read.org/m33u2/5546-….m3u"})`.
- * When `preferKey` is set (e.g. `2901-slug`), prefer a URL whose path contains that key
- * so related-book embeds on the same page do not steal the match.
+ *
+ * Page slug and m3u slug can differ (e.g. `4383-garris-tomas-….html` vs
+ * `m33u2/4383-tomas-garris-….m3u`). When `preferKey` is set (`{id}-{pageSlug}`),
+ * prefer an exact path match, otherwise any `/m33u2/{id}-….m3u` for that id —
+ * never a related book's different id.
  */
 export function extractPlaylistUrlFromHtml(
   html: string,
   baseUrl?: string,
   preferKey?: string | null,
 ): string | null {
+  const base = baseUrl ?? "https://4read.org/";
   const patterns = [
     /Playerjs\(\s*\{[^}]*\bfile\s*:\s*["']([^"']*m33u2[^"']+\.m3u[^"']*)["']/gi,
     /["'](https?:\/\/[^"']*\/m33u2\/[^"']+\.m3u[^"']*)["']/gi,
     /["'](\/m33u2\/[^"']+\.m3u[^"']*)["']/gi,
+    // Bare path as on some pages / CDN dumps: m33u2/4383-tomas-garris-….m3u
+    /(?:^|[^/\w])(m33u2\/\d+-[A-Za-z0-9_-]+\.m3u)(?=$|[^A-Za-z0-9_.-])/gi,
   ];
   const found: string[] = [];
   for (const pattern of patterns) {
@@ -404,7 +419,7 @@ export function extractPlaylistUrlFromHtml(
       const raw = match[1]?.trim();
       if (!raw) continue;
       try {
-        const href = new URL(raw, baseUrl ?? "https://4read.org/").href;
+        const href = new URL(raw.startsWith("m33u2/") ? `/${raw}` : raw, base).href;
         if (!found.includes(href)) found.push(href);
       } catch {
         // skip
@@ -413,20 +428,25 @@ export function extractPlaylistUrlFromHtml(
     if (found.length) break; // Prefer Playerjs matches over loose URL scans.
   }
   if (found.length === 0) return null;
-  if (preferKey) {
-    const needle = preferKey.toLowerCase();
-    const preferred = found.find((url) => {
-      try {
-        return decodeURIComponent(new URL(url).pathname).toLowerCase().includes(needle);
-      } catch {
-        return url.toLowerCase().includes(needle);
-      }
+  if (!preferKey) return found[0] ?? null;
+
+  const needle = preferKey.toLowerCase();
+  const sourceId = /^(\d+)(?:-|$)/.exec(preferKey)?.[1] ?? null;
+
+  const exact = found.find((url) => playlistPath(url).includes(`/m33u2/${needle}.m3u`));
+  if (exact) return exact;
+
+  // Same article id, different slug order (author surname/forename swapped, etc.).
+  if (sourceId) {
+    const byId = found.find((url) => {
+      const path = playlistPath(url);
+      return new RegExp(`/m33u2/${sourceId}-[^/]+\\.m3u$`, "i").test(path);
     });
-    // When preferKey is set but nothing matches (wrong page HTML from a session race, or
-    // only related-book embeds), return null so the caller uses the constructed {id}-{slug} URL.
-    return preferred ?? null;
+    if (byId) return byId;
   }
-  return found[0] ?? null;
+
+  // Only related-book embeds with other ids — fall back to constructed URL.
+  return null;
 }
 
 interface HarLike {
@@ -493,31 +513,28 @@ async function ensureAudioFromPlaylistUnlocked(
   const referer = bookPageReferer(book, config);
 
   const markerPath = join(dir, PLAYLIST_MARKER);
-  const markerCandidate = constructedUrl;
 
   // Resume: if every expected track from a prior manifest is already on disk, skip network.
+  // Marker may be the Playerjs URL (slug ≠ page slug); do not require it to equal constructedUrl.
   {
     const prior = await readAudioStatus(dir, config.audio.minFileBytes);
     if (prior.complete && prior.total > 0) {
-      let markerOk = false;
+      let storedPlaylist = constructedUrl ?? "";
       try {
-        const marker = (await readFile(markerPath, "utf8")).trim();
-        markerOk = Boolean(markerCandidate && marker === markerCandidate);
+        storedPlaylist = (await readFile(markerPath, "utf8")).trim() || storedPlaylist;
       } catch {
-        markerOk = prior.complete;
+        // no marker yet — still trust a complete tracks manifest
       }
-      if (markerOk || !markerCandidate) {
-        log.debug(
-          `audio already complete for ${book.source_id} (${prior.downloaded}/${prior.total} files)`,
-        );
-        return {
-          playlistUrl: markerCandidate ?? prior.files[0]?.file ?? "",
-          tracks: prior.total,
-          downloaded: 0,
-          skipped: prior.downloaded,
-          files: prior.files.map((f) => join(dir, f.file)),
-        };
-      }
+      log.debug(
+        `audio already complete for ${book.source_id} (${prior.downloaded}/${prior.total} files)`,
+      );
+      return {
+        playlistUrl: storedPlaylist,
+        tracks: prior.total,
+        downloaded: 0,
+        skipped: prior.downloaded,
+        files: prior.files.map((f) => join(dir, f.file)),
+      };
     }
   }
 
